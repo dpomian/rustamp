@@ -67,6 +67,11 @@ pub struct RustampApp {
 impl RustampApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_fallback_font(&cc.egui_ctx);
+        // egui's default scrollbars float over the content and widen on
+        // hover, covering the row above them — solid bars reserve their
+        // own space in the layout instead.
+        cc.egui_ctx
+            .all_styles_mut(|style| style.spacing.scroll.floating = false);
         let config = Config::load();
         let player = match AudioPlayer::new() {
             Ok(p) => {
@@ -662,14 +667,19 @@ impl RustampApp {
                 }
                 ui.add_space(6.0);
                 let mut to_remove = None;
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::both().show(ui, |ui| {
                     for folder in &self.config.folders {
                         ui.horizontal(|ui| {
                             if ui.small_button("x").clicked() {
                                 to_remove = Some(folder.clone());
                             }
-                            ui.label(folder.display().to_string())
-                                .on_hover_text(folder.display().to_string());
+                            let full = folder.display().to_string();
+                            ui.label(&full).context_menu(|ui| {
+                                if ui.button("Copy path").clicked() {
+                                    ui.ctx().copy_text(full.clone());
+                                    ui.close();
+                                }
+                            });
                         });
                     }
                     if self.config.folders.is_empty() {
@@ -688,6 +698,9 @@ impl RustampApp {
 
     fn ui_playlist(&mut self, ui: &mut Ui) {
         egui::CentralPanel::default().show(ui, |ui| {
+            // Labels are selectable app-wide (egui default); playlist text
+            // is display-only — right-click a row to copy its tags.
+            ui.style_mut().interaction.selectable_labels = false;
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(format!("Playlist ({} tracks)", self.playlist.tracks.len()))
@@ -772,9 +785,9 @@ impl RustampApp {
                         row.col(|ui| {
                             ui.label(RichText::new(format!("{row_num}")).weak());
                         });
-                        for text in [artist, title, album] {
+                        for text in [&artist, &title, &album] {
                             row.col(|ui| {
-                                let mut text = RichText::new(text);
+                                let mut text = RichText::new(text.as_str());
                                 if is_current {
                                     text = text.color(ACCENT).strong();
                                 }
@@ -794,6 +807,21 @@ impl RustampApp {
                         });
 
                         let resp = row.response();
+                        resp.context_menu(|ui| {
+                            for (label, value) in [
+                                ("Copy artist", &artist),
+                                ("Copy title", &title),
+                                ("Copy album", &album),
+                            ] {
+                                if ui
+                                    .add_enabled(!value.is_empty(), egui::Button::new(label))
+                                    .clicked()
+                                {
+                                    ui.ctx().copy_text(value.clone());
+                                    ui.close();
+                                }
+                            }
+                        });
                         if resp.clicked() {
                             self.selected = Some(track_index);
                         }
