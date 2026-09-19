@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 
+use crate::visualizer::{SampleBuffer, SampleTap};
+
 #[derive(Debug)]
 pub enum AudioError {
     NoDevice(rodio::DeviceSinkError),
@@ -39,6 +41,8 @@ pub struct AudioPlayer {
     player: Player,
     pub state: PlayState,
     duration: Option<Duration>,
+    sample_buffer: SampleBuffer,
+    sample_rate: u32,
 }
 
 impl AudioPlayer {
@@ -50,6 +54,8 @@ impl AudioPlayer {
             player,
             state: PlayState::Stopped,
             duration: None,
+            sample_buffer: SampleBuffer::new(),
+            sample_rate: 44_100,
         })
     }
 
@@ -59,11 +65,24 @@ impl AudioPlayer {
         let file = File::open(path).map_err(AudioError::Open)?;
         let decoder = Decoder::new(BufReader::new(file)).map_err(AudioError::Decode)?;
         self.duration = decoder.total_duration();
+        self.sample_rate = decoder.sample_rate().get();
+        self.sample_buffer.clear();
+        let tapped = SampleTap::new(decoder, self.sample_buffer.clone());
         self.player.stop(); // flush anything still queued
-        self.player.append(decoder);
+        self.player.append(tapped);
         self.player.play();
         self.state = PlayState::Playing;
         Ok(self.duration)
+    }
+
+    /// Shared buffer of mono samples for the visualizer.
+    pub fn sample_buffer(&self) -> SampleBuffer {
+        self.sample_buffer.clone()
+    }
+
+    /// Sample rate of the currently loaded track.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
     }
 
     pub fn pause(&mut self) {
@@ -81,6 +100,7 @@ impl AudioPlayer {
         self.player.stop();
         self.state = PlayState::Stopped;
         self.duration = None;
+        self.sample_buffer.clear();
     }
 
     pub fn set_volume(&self, volume: f32) {

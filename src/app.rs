@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::library::{self, Track};
 use crate::player::{AudioPlayer, PlayState};
 use crate::playlist::Playlist;
+use crate::visualizer::{FFT_SIZE, NUM_BANDS, SpectrumAnalyzer};
 
 const ACCENT: Color32 = Color32::from_rgb(0, 255, 128); // winamp-ish green
 const ROW_HEIGHT: f32 = 22.0;
@@ -22,6 +23,7 @@ pub struct RustampApp {
     filter: String,
     seek_drag: Option<Duration>,
     status: Option<(String, Instant)>,
+    analyzer: SpectrumAnalyzer,
 }
 
 impl RustampApp {
@@ -50,6 +52,7 @@ impl RustampApp {
             filter: String::new(),
             seek_drag: None,
             status: None,
+            analyzer: SpectrumAnalyzer::new(),
         };
         app.rescan();
         app
@@ -170,6 +173,13 @@ impl RustampApp {
         })
     }
 
+    fn analyzer_rate(&self) -> u32 {
+        self.player
+            .as_ref()
+            .map(|p| p.sample_rate())
+            .unwrap_or(44_100)
+    }
+
     fn current_duration(&self) -> Option<Duration> {
         self.player.as_ref().and_then(|p| p.duration()).or_else(|| {
             self.playlist
@@ -206,6 +216,56 @@ fn marquee(ui: &mut Ui, text: &str, color: Color32) {
         .galley(egui::pos2(x, y), galley, color);
 }
 
+/// Winamp-style spectrum analyzer: segmented bars with a brighter peak cell
+/// that falls more slowly than the bar itself.
+fn spectrum(ui: &mut Ui, bars: &[f32; NUM_BANDS], peaks: &[f32; NUM_BANDS]) {
+    const HEIGHT: f32 = 64.0;
+    const SEG_H: f32 = 5.0;
+    const SEG_GAP: f32 = 2.0;
+    const BAR_GAP: f32 = 3.0;
+
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, 2.0, Color32::from_rgb(8, 12, 8));
+
+    let n = bars.len() as f32;
+    let bar_w = ((rect.width() - 8.0 - BAR_GAP * (n - 1.0)) / n).max(1.0);
+    let pitch = SEG_H + SEG_GAP;
+    let segs = ((rect.height() - 4.0) / pitch).floor().max(1.0) as i32;
+
+    let color_at = |frac: f32, lit: bool| {
+        if !lit {
+            return Color32::from_rgb(18, 30, 20); // ghost grid
+        }
+        if frac < 0.62 {
+            Color32::from_rgb(0, 210, 90)
+        } else if frac < 0.85 {
+            Color32::from_rgb(240, 200, 40)
+        } else {
+            Color32::from_rgb(255, 60, 40)
+        }
+    };
+
+    for i in 0..NUM_BANDS {
+        let x0 = rect.left() + 4.0 + i as f32 * (bar_w + BAR_GAP);
+        let lit = (bars[i] * segs as f32).round() as i32;
+        let peak = (peaks[i] * segs as f32).round() as i32;
+        for s in 0..segs {
+            let y1 = rect.bottom() - 2.0 - s as f32 * pitch;
+            let seg_rect =
+                egui::Rect::from_min_max(egui::pos2(x0, y1 - SEG_H), egui::pos2(x0 + bar_w, y1));
+            let frac = s as f32 / segs as f32;
+            if s < lit {
+                painter.rect_filled(seg_rect, 1.0, color_at(frac, true));
+            } else if s == peak - 1 && peak > lit {
+                painter.rect_filled(seg_rect, 1.0, Color32::from_rgb(255, 240, 200));
+            } else {
+                painter.rect_filled(seg_rect, 1.0, color_at(frac, false));
+            }
+        }
+    }
+}
+
 impl eframe::App for RustampApp {
     /// Non-UI work: poll the scan thread, advance finished tracks, keys.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -231,12 +291,30 @@ impl eframe::App for RustampApp {
             .player
             .as_ref()
             .is_some_and(|p| p.state == PlayState::Playing);
+
+        // Feed the spectrum analyzer: live samples while playing, silence
+        // otherwise so the bars fall gracefully on pause/stop.
+        let (samples, rate) = if playing {
+            let p = self.player.as_ref().unwrap();
+            (p.sample_buffer().latest(FFT_SIZE), p.sample_rate())
+        } else {
+            (vec![0.0; FFT_SIZE], self.analyzer_rate())
+        };
+        self.analyzer.update(&samples, rate);
         let fresh_status = self
             .status
             .as_ref()
             .is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(6));
-        if playing || self.seek_drag.is_some() || fresh_status {
-            ctx.request_repaint_after(Duration::from_millis(50));
+        // Keep animating while the spectrum still has energy to decay —
+        // egui only runs frames on input otherwise, freezing the bars.
+        let bars_alive = self
+            .analyzer
+            .bars
+            .iter()
+            .chain(self.analyzer.peaks.iter())
+            .any(|&v| v > 0.002);
+        if playing || self.seek_drag.is_some() || fresh_status || bars_alive {
+            ctx.request_repaint_after(Duration::from_millis(33));
         }
     }
 
@@ -316,6 +394,9 @@ impl RustampApp {
                 };
                 marquee(ui, &format!("{prefix}{now_playing}"), ACCENT);
             });
+            let bars = self.analyzer.bars;
+            let peaks = self.analyzer.peaks;
+            spectrum(ui, &bars, &peaks);
             ui.add_space(2.0);
         });
     }

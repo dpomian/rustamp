@@ -3,6 +3,7 @@ mod config;
 mod library;
 mod player;
 mod playlist;
+mod visualizer;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
