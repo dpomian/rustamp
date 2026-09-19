@@ -1,7 +1,8 @@
 # Rustamp
 
-A Winamp-inspired desktop MP3 player written in Rust. Point it at folders
-containing MP3s and it builds a sorted library from ID3 tags, then plays them
+A Winamp-inspired desktop music player written in Rust. Point it at folders
+containing audio files (MP3, FLAC, OGG/Vorbis, Opus, M4A/AAC, WAV, AIFF,
+WavPack) and it builds a sorted library from their tags, then plays them
 back with a live spectrum visualizer.
 
 Built with [egui/eframe](https://github.com/emilk/egui) for the UI and
@@ -9,11 +10,13 @@ Built with [egui/eframe](https://github.com/emilk/egui) for the UI and
 
 ## Features
 
-- Watch folders — recursively scans for MP3s, deduplicates, reads ID3 tags
-- Playlist with filter/search, shuffle, and repeat (off / all / one)
+- Watch folders — recursively scans for audio files, deduplicates, reads tags
+- Drag & drop — drop folders to watch them, or drop files to play them
+- Playlist with filter/search, sortable columns, shuffle, and repeat (off / all / one)
 - Play, pause, stop, prev/next, seek bar, volume control
 - Real-time spectrum analyzer fed from the decoded audio stream
 - Persistent config (folders + volume) in your platform config dir
+- Resume playback — reopens the last track paused where you left off
 
 ## Run
 
@@ -23,7 +26,7 @@ Requires a recent stable Rust toolchain.
 cargo run --release
 ```
 
-Then click **Add folder…** to pick directories containing MP3s.
+Then click **Add folder…** to pick directories containing music.
 
 ### Keyboard shortcuts
 
@@ -40,7 +43,7 @@ Then click **Add folder…** to pick directories containing MP3s.
 ```
 src/
   audio/      playback (rodio), sample tap, spectrum analyzer (FFT)
-  library/    track model, folder scanning (walkdir + id3)
+  library/    track model, folder scanning (walkdir + lofty)
   ui/         egui app and widgets
   config.rs   persisted settings
   playlist.rs track order, shuffle, repeat logic

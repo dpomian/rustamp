@@ -8,13 +8,20 @@ fn default_volume() -> f32 {
     1.0
 }
 
-/// Persisted application state: watched folders and volume.
+/// Persisted application state: watched folders, volume, and the playback
+/// position to resume from on the next launch.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub folders: Vec<PathBuf>,
     #[serde(default = "default_volume")]
     pub volume: f32,
+    /// Track that was loaded at the last checkpoint, if any.
+    #[serde(default)]
+    pub last_track: Option<PathBuf>,
+    /// How far into `last_track` playback had reached, in seconds.
+    #[serde(default)]
+    pub last_position_secs: Option<f64>,
 }
 
 impl Default for Config {
@@ -22,6 +29,8 @@ impl Default for Config {
         Self {
             folders: Vec::new(),
             volume: 1.0,
+            last_track: None,
+            last_position_secs: None,
         }
     }
 }

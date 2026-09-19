@@ -1,18 +1,49 @@
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontId, RichText, Ui};
+use egui_extras::{Column, TableBuilder};
 
 use crate::audio::{AudioPlayer, FFT_SIZE, PlayState, SpectrumAnalyzer};
 use crate::config::Config;
 use crate::library::{self, Track};
-use crate::playlist::Playlist;
+use crate::playlist::{Playlist, SortKey};
 
 use super::widgets::{format_time, marquee, spectrum};
 
 const ACCENT: Color32 = Color32::from_rgb(0, 255, 128); // winamp-ish green
 const ROW_HEIGHT: f32 = 22.0;
+/// How often the playback position is checkpointed to disk while playing.
+const POSITION_SAVE_INTERVAL: Duration = Duration::from_secs(10);
+
+/// egui's bundled fonts lack geometric-shape glyphs (▲▼ in the sort
+/// headers). Register a macOS symbol font as a fallback so they render —
+/// appended last, so it's only consulted for glyphs the default font
+/// doesn't have. No-op off macOS.
+fn install_fallback_font(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/Apple Symbols.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ];
+    let Some(bytes) = CANDIDATES.iter().find_map(|p| std::fs::read(p).ok()) else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "system-symbols".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("system-symbols".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
 
 pub struct RustampApp {
     config: Config,
@@ -20,15 +51,22 @@ pub struct RustampApp {
     player: Option<AudioPlayer>,
     audio_error: Option<String>,
     scan_rx: Option<Receiver<Vec<Track>>>,
+    extra_tracks: Vec<Track>,
     selected: Option<usize>,
     filter: String,
     seek_drag: Option<Duration>,
     status: Option<(String, Instant)>,
     analyzer: SpectrumAnalyzer,
+    /// Track + position to restore once the startup scan finishes.
+    pending_restore: Option<(PathBuf, f64)>,
+    last_pos_save: Instant,
+    sort_key: SortKey,
+    sort_asc: bool,
 }
 
 impl RustampApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        install_fallback_font(&cc.egui_ctx);
         let config = Config::load();
         let player = match AudioPlayer::new() {
             Ok(p) => {
@@ -43,17 +81,26 @@ impl RustampApp {
         let audio_error = player
             .is_none()
             .then(|| "No audio output device found — playback disabled.".to_string());
+        let pending_restore = config
+            .last_track
+            .clone()
+            .map(|p| (p, config.last_position_secs.unwrap_or(0.0)));
         let mut app = Self {
             config,
             playlist: Playlist::new(),
             player,
             audio_error,
             scan_rx: None,
+            extra_tracks: Vec::new(),
             selected: None,
             filter: String::new(),
             seek_drag: None,
             status: None,
             analyzer: SpectrumAnalyzer::new(),
+            pending_restore,
+            last_pos_save: Instant::now(),
+            sort_key: SortKey::Artist,
+            sort_asc: true,
         };
         app.rescan();
         app
@@ -85,9 +132,14 @@ impl RustampApp {
                     self.playlist.set_duration(track_index, d);
                 }
             }
-            Err(e) => self.set_status(format!("Cannot play {}: {e}", path.display())),
+            Err(e) => {
+                self.set_status(format!("Cannot play {}: {e}", path.display()));
+                self.selected = Some(track_index);
+                return;
+            }
         }
         self.selected = Some(track_index);
+        self.save_position();
     }
 
     fn play_selected(&mut self, track_index: usize) {
@@ -103,7 +155,10 @@ impl RustampApp {
             return;
         };
         match player.state {
-            PlayState::Playing => player.pause(),
+            PlayState::Playing => {
+                player.pause();
+                self.save_position();
+            }
             PlayState::Paused => player.resume(),
             PlayState::Stopped => {
                 let idx = self.selected.or(self.playlist.current_index());
@@ -121,6 +176,11 @@ impl RustampApp {
     fn stop(&mut self) {
         if let Some(player) = &mut self.player {
             player.stop();
+        }
+        // Winamp-style stop rewinds to 0:00 — resume starts the track over.
+        if self.config.last_track.is_some() {
+            self.config.last_position_secs = Some(0.0);
+            let _ = self.config.save();
         }
     }
 
@@ -188,6 +248,114 @@ impl RustampApp {
                 .and_then(|i| self.playlist.tracks[i].duration)
         })
     }
+
+    /// Persist the current track + playback position so the next launch can
+    /// resume where the user left off.
+    fn save_position(&mut self) {
+        if let Some(idx) = self.playlist.current_index() {
+            self.config.last_track = Some(self.playlist.tracks[idx].path.clone());
+            self.config.last_position_secs = Some(self.current_position().as_secs_f64());
+        } else {
+            self.config.last_track = None;
+            self.config.last_position_secs = None;
+        }
+        let _ = self.config.save();
+        self.last_pos_save = Instant::now();
+    }
+
+    /// Called once the startup scan completes: reload the last-played track,
+    /// seek to the saved position, and pause — the user presses Space to
+    /// continue rather than getting blasted by music on launch.
+    fn restore_position(&mut self) {
+        let Some((path, pos)) = self.pending_restore.take() else {
+            return;
+        };
+        let Some(idx) = self.playlist.tracks.iter().position(|t| t.path == path) else {
+            return;
+        };
+        self.play_index(idx);
+        if let Some(player) = &mut self.player {
+            player.seek(Duration::from_secs_f64(pos));
+            player.pause();
+        }
+        // play_index recorded position ~0; put back where we actually were.
+        self.config.last_position_secs = Some(pos);
+        if let Some(t) = self.playlist.current() {
+            self.set_status(format!("Resumed at {}", t.display_title()));
+        }
+    }
+
+    /// Clickable playlist column header: click selects that sort key,
+    /// clicking the active key toggles direction. `selected` is a track
+    /// index, so it's re-anchored by path across the reorder.
+    fn sort_header(&mut self, ui: &mut Ui, key: SortKey, label: &str) {
+        let active = self.sort_key == key;
+        let arrow = if active {
+            if self.sort_asc { " ▲" } else { " ▼" }
+        } else {
+            ""
+        };
+        let mut text = RichText::new(format!("{label}{arrow}"));
+        if active {
+            text = text.color(ACCENT);
+        }
+        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+        if resp.clicked() {
+            if active {
+                self.sort_asc = !self.sort_asc;
+            } else {
+                self.sort_key = key;
+                self.sort_asc = true;
+            }
+            let selected_path = self
+                .selected
+                .and_then(|i| self.playlist.tracks.get(i).map(|t| t.path.clone()));
+            self.playlist.sort_tracks(key, self.sort_asc);
+            self.selected =
+                selected_path.and_then(|p| self.playlist.tracks.iter().position(|t| t.path == p));
+        }
+    }
+
+    /// Drag-and-drop: directories become watch folders; loose audio files
+    /// are appended to the playlist (session-only until they land inside a
+    /// watched folder) and the first one starts playing.
+    fn handle_dropped(&mut self, paths: Vec<PathBuf>) {
+        let mut folders_added = 0;
+        let mut new_tracks = Vec::new();
+        for path in paths {
+            if path.is_dir() {
+                if self.config.add_folder(path) {
+                    folders_added += 1;
+                }
+            } else if library::is_audio(&path)
+                && !self.extra_tracks.iter().any(|t| t.path == path)
+                && !self.playlist.tracks.iter().any(|t| t.path == path)
+            {
+                new_tracks.push(library::track_from_path(&path));
+            }
+        }
+
+        if folders_added > 0 {
+            let _ = self.config.save();
+            self.rescan();
+        }
+
+        let mut parts = Vec::new();
+        if folders_added > 0 {
+            parts.push(format!("{folders_added} folder(s) added"));
+        }
+        if !new_tracks.is_empty() {
+            let n = new_tracks.len();
+            self.extra_tracks.extend(new_tracks.iter().cloned());
+            self.playlist.add_tracks(new_tracks, &mut rand::rng());
+            // add_tracks appends, so the first dropped file sits at len - n.
+            self.play_selected(self.playlist.tracks.len() - n);
+            parts.push(format!("{n} track(s) added"));
+        }
+        if !parts.is_empty() {
+            self.set_status(format!("Dropped: {}", parts.join(", ")));
+        }
+    }
 }
 
 impl eframe::App for RustampApp {
@@ -196,16 +364,36 @@ impl eframe::App for RustampApp {
         if let Some(rx) = &self.scan_rx {
             match rx.try_recv() {
                 Ok(tracks) => {
+                    // Loose drag-and-dropped files aren't inside watched
+                    // folders — merge them back in so a rescan keeps them.
+                    let mut tracks = tracks;
+                    for extra in &self.extra_tracks {
+                        if !tracks.iter().any(|t| t.path == extra.path) {
+                            tracks.push(extra.clone());
+                        }
+                    }
                     let n = tracks.len();
                     self.playlist.set_tracks(tracks, &mut rand::rng());
                     self.scan_rx = None;
                     self.set_status(format!("Library scan complete: {n} tracks"));
+                    self.restore_position();
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
                 Err(mpsc::TryRecvError::Disconnected) => self.scan_rx = None,
             }
+        }
+
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.handle_dropped(dropped);
         }
 
         self.maybe_auto_advance();
@@ -215,6 +403,9 @@ impl eframe::App for RustampApp {
             .player
             .as_ref()
             .is_some_and(|p| p.state == PlayState::Playing);
+        if playing && self.last_pos_save.elapsed() >= POSITION_SAVE_INTERVAL {
+            self.save_position();
+        }
 
         // Feed the spectrum analyzer: live samples while playing, silence
         // otherwise so the bars fall gracefully on pause/stop.
@@ -247,6 +438,21 @@ impl eframe::App for RustampApp {
         self.ui_bottom(ui);
         self.ui_folders(ui);
         self.ui_playlist(ui);
+
+        if ui.ctx().input(|i| !i.raw.hovered_files.is_empty()) {
+            egui::Area::new(egui::Id::new("drop_hint"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(RichText::new("Drop folders or tracks to add them").color(ACCENT));
+                    });
+                });
+        }
+    }
+
+    fn on_exit(&mut self) {
+        self.save_position();
     }
 }
 
@@ -522,51 +728,79 @@ impl RustampApp {
                 .collect();
 
             let current = self.playlist.current_index();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
-                    for row in range {
-                        let track_index = visible[row];
+            TableBuilder::new(ui)
+                .id_salt("playlist")
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::exact(30.0))
+                .column(Column::remainder().at_least(120.0).clip(true))
+                .column(Column::remainder().at_least(160.0).clip(true))
+                .column(Column::remainder().at_least(120.0).clip(true))
+                .column(Column::exact(48.0))
+                .header(ROW_HEIGHT, |mut header| {
+                    header.col(|ui| {
+                        ui.label(RichText::new("#").weak());
+                    });
+                    header.col(|ui| self.sort_header(ui, SortKey::Artist, "Artist"));
+                    header.col(|ui| self.sort_header(ui, SortKey::Title, "Title"));
+                    header.col(|ui| self.sort_header(ui, SortKey::Album, "Album"));
+                    header.col(|ui| self.sort_header(ui, SortKey::Duration, "Time"));
+                })
+                .body(|body| {
+                    body.rows(ROW_HEIGHT, visible.len(), |mut row| {
+                        let track_index = visible[row.index()];
+                        let row_num = row.index() + 1;
                         // Copy display data out so click handlers can mutate self.
-                        let (title, track_duration) = {
+                        let (artist, title, album, track_duration) = {
                             let t = &self.playlist.tracks[track_index];
-                            (t.display_title(), t.duration)
+                            (
+                                t.artist.clone().unwrap_or_default(),
+                                t.title.clone().unwrap_or_else(|| {
+                                    t.path
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().into_owned())
+                                        .unwrap_or_default()
+                                }),
+                                t.album.clone().unwrap_or_default(),
+                                t.duration,
+                            )
                         };
                         let is_current = current == Some(track_index);
                         let is_selected = self.selected == Some(track_index);
+                        row.set_selected(is_selected);
 
-                        ui.horizontal(|ui| {
-                            ui.add_sized(
-                                [40.0, ROW_HEIGHT],
-                                egui::Label::new(RichText::new(format!("{}", row + 1)).weak()),
-                            );
-                            let mut text = RichText::new(title);
-                            if is_current {
-                                text = text.color(ACCENT).strong();
-                            }
-                            let resp = ui.selectable_label(is_selected, text);
-                            if resp.clicked() {
-                                self.selected = Some(track_index);
-                            }
-                            if resp.double_clicked() {
-                                self.play_selected(track_index);
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            track_duration
-                                                .map(format_time)
-                                                .unwrap_or_else(|| "--:--".into()),
-                                        )
-                                        .weak()
-                                        .monospace(),
-                                    );
-                                },
+                        row.col(|ui| {
+                            ui.label(RichText::new(format!("{row_num}")).weak());
+                        });
+                        for text in [artist, title, album] {
+                            row.col(|ui| {
+                                let mut text = RichText::new(text);
+                                if is_current {
+                                    text = text.color(ACCENT).strong();
+                                }
+                                ui.add(egui::Label::new(text).truncate());
+                            });
+                        }
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(
+                                    track_duration
+                                        .map(format_time)
+                                        .unwrap_or_else(|| "--:--".into()),
+                                )
+                                .weak()
+                                .monospace(),
                             );
                         });
-                    }
+
+                        let resp = row.response();
+                        if resp.clicked() {
+                            self.selected = Some(track_index);
+                        }
+                        if resp.double_clicked() {
+                            self.play_selected(track_index);
+                        }
+                    });
                 });
         });
     }

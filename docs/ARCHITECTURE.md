@@ -26,12 +26,12 @@ src/
   lib.rs             crate root; re-exports the five modules
 
   config.rs          Config: persisted folders + volume (serde_json → platform config dir)
-  playlist.rs        Playlist: tracks + play order + shuffle/repeat logic (no I/O)
+  playlist.rs        Playlist: tracks + play order + shuffle/repeat/sort logic (no I/O)
 
   library/
     mod.rs           re-exports
     track.rs         Track model, display_title(), matches_filter()
-    scan.rs          is_mp3(), scan_folder() (walkdir + id3), scan_folders() (dedup + sort)
+    scan.rs          is_audio(), scan_folder() (walkdir + lofty), scan_folders() (dedup + sort)
 
   audio/
     mod.rs           re-exports
@@ -114,6 +114,10 @@ Rules that follow from this:
 - `set_tracks` preserves the current track **by path** across rescans, so a
   library refresh doesn't kill playback.
 - `set_shuffle` rebuilds `order` and re-anchors the cursor to the same track.
+- `sort_tracks` permutes `tracks` and remaps `order` through the inverse
+  permutation — the cursor position doesn't move, it just resolves to the
+  same track in the new display order. Callers holding a track index (e.g.
+  `RustampApp::selected`) must re-anchor by path afterwards.
 
 Separately, `RustampApp::selected` is the **highlighted row** (single-click),
 independent of `current_index` (what's actually playing). Space/Stop never
@@ -205,8 +209,8 @@ deliberate save trigger rather than saving per-frame.
 | ------------ | ----- |
 | Add a keyboard shortcut | `RustampApp::handle_keys` (respect `egui_wants_keyboard_input`) |
 | Add a persisted setting | `Config` field + `#[serde(default)]` + a save call site in `app.rs` |
-| Support a new audio format | `is_mp3` + the `scan_folder` filter (rodio already decodes most formats via symphonia) |
-| Change sort/filter behavior | `scan_folders` sort key / `matches_filter` |
+| Support a new audio format | `AUDIO_EXTENSIONS` in `scan.rs` (rodio already decodes most formats via symphonia) |
+| Change sort/filter behavior | `SortKey`/`sort_tracks` in `playlist.rs`, `matches_filter` in `track.rs` |
 | Add a play mode (e.g. repeat-off variant) | `RepeatMode` + `advance_auto`/`step_manual` in `playlist.rs` |
 | Change the visualizer look | `widgets::spectrum` (paint only) or `SpectrumAnalyzer` (signal processing) |
 | Add a different visualization | New widget in `widgets.rs` fed from `player.sample_buffer()` — keep `SampleTap` untouched |
@@ -229,9 +233,10 @@ deliberate save trigger rather than saving per-frame.
 | Crate | Role |
 | ----- | ---- |
 | `eframe`/`egui` | window + immediate-mode UI |
+| `egui_extras` | `TableBuilder` for the sortable playlist columns |
 | `rodio` | audio output + decoding (symphonia under the hood) |
 | `rustfft` | FFT for the spectrum analyzer |
-| `id3` | ID3 tag reading during scan |
+| `lofty` | tag reading during scan (ID3, Vorbis comments, MP4 atoms, …) |
 | `walkdir` | recursive folder traversal |
 | `rfd` | native folder-picker dialog |
 | `dirs` | platform config directory |

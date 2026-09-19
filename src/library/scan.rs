@@ -2,17 +2,25 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use id3::TagLike;
+use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::tag::Accessor;
 use walkdir::WalkDir;
 
 use super::Track;
 
-pub fn is_mp3(path: &Path) -> bool {
+/// Extensions we hand to the decoder — rodio (symphonia) supports all of
+/// these, and lofty can read tags from all of them.
+const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "aiff", "aif", "wv",
+];
+
+pub fn is_audio(path: &Path) -> bool {
     path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp3"))
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| AUDIO_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext)))
 }
 
-/// Read whatever metadata is cheaply available from the ID3 tag.
+/// Read whatever metadata is cheaply available from the file's tags.
 /// Missing/invalid tags are not fatal — the track is still usable.
 fn read_tags(
     path: &Path,
@@ -22,19 +30,33 @@ fn read_tags(
     Option<String>,
     Option<Duration>,
 ) {
-    match id3::Tag::read_from_path(path) {
-        Ok(tag) => (
-            tag.title().map(str::to_owned),
-            tag.artist().map(str::to_owned),
-            tag.album().map(str::to_owned),
-            tag.duration()
-                .map(|ms| Duration::from_millis(u64::from(ms))),
-        ),
-        Err(_) => (None, None, None, None),
+    let Ok(tagged) = lofty::read_from_path(path) else {
+        return (None, None, None, None);
+    };
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
+    let duration = tagged.properties().duration();
+    (
+        tag.and_then(|t| t.title().map(|s| s.into_owned())),
+        tag.and_then(|t| t.artist().map(|s| s.into_owned())),
+        tag.and_then(|t| t.album().map(|s| s.into_owned())),
+        (!duration.is_zero()).then_some(duration),
+    )
+}
+
+/// Build a Track for a single file — e.g. a drag-and-dropped file that is
+/// not inside a watched folder.
+pub fn track_from_path(path: &Path) -> Track {
+    let (title, artist, album, duration) = read_tags(path);
+    Track {
+        path: path.to_path_buf(),
+        title,
+        artist,
+        album,
+        duration,
     }
 }
 
-/// Recursively collect every MP3 under `folder`.
+/// Recursively collect every supported audio file under `folder`.
 pub fn scan_folder(folder: &Path) -> Vec<Track> {
     WalkDir::new(folder)
         .follow_links(true)
@@ -42,17 +64,8 @@ pub fn scan_folder(folder: &Path) -> Vec<Track> {
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
-        .filter(|path| is_mp3(path))
-        .map(|path| {
-            let (title, artist, album, duration) = read_tags(&path);
-            Track {
-                path,
-                title,
-                artist,
-                album,
-                duration,
-            }
-        })
+        .filter(|path| is_audio(path))
+        .map(|path| track_from_path(&path))
         .collect()
 }
 
@@ -84,16 +97,18 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn is_mp3_checks_extension_case_insensitively() {
-        assert!(is_mp3(Path::new("song.mp3")));
-        assert!(is_mp3(Path::new("song.MP3")));
-        assert!(is_mp3(Path::new("song.Mp3")));
-        assert!(!is_mp3(Path::new("song.flac")));
-        assert!(!is_mp3(Path::new("song")));
+    fn is_audio_checks_extension_case_insensitively() {
+        assert!(is_audio(Path::new("song.mp3")));
+        assert!(is_audio(Path::new("song.MP3")));
+        assert!(is_audio(Path::new("song.Flac")));
+        assert!(is_audio(Path::new("song.m4a")));
+        assert!(is_audio(Path::new("song.wav")));
+        assert!(!is_audio(Path::new("song.txt")));
+        assert!(!is_audio(Path::new("song")));
     }
 
     #[test]
-    fn scan_folder_finds_mp3s_recursively_and_ignores_others() {
+    fn scan_folder_finds_audio_recursively_and_ignores_others() {
         let root = std::env::temp_dir().join(format!("rustamp-test-{}", std::process::id()));
         let nested = root.join("nested").join("deep");
         fs::create_dir_all(&nested).unwrap();
@@ -108,7 +123,7 @@ mod tests {
             .collect();
         found.sort();
 
-        assert_eq!(found, vec!["a.mp3", "b.MP3"]);
+        assert_eq!(found, vec!["a.mp3", "b.MP3", "c.flac"]);
         fs::remove_dir_all(&root).unwrap();
     }
 
