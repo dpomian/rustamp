@@ -14,6 +14,8 @@ use super::widgets::{format_time, marquee, spectrum};
 
 const ACCENT: Color32 = Color32::from_rgb(0, 255, 128); // winamp-ish green
 const ROW_HEIGHT: f32 = 22.0;
+/// How often the playback position is checkpointed to disk while playing.
+const POSITION_SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct RustampApp {
     config: Config,
@@ -27,6 +29,9 @@ pub struct RustampApp {
     seek_drag: Option<Duration>,
     status: Option<(String, Instant)>,
     analyzer: SpectrumAnalyzer,
+    /// Track + position to restore once the startup scan finishes.
+    pending_restore: Option<(PathBuf, f64)>,
+    last_pos_save: Instant,
 }
 
 impl RustampApp {
@@ -45,6 +50,10 @@ impl RustampApp {
         let audio_error = player
             .is_none()
             .then(|| "No audio output device found — playback disabled.".to_string());
+        let pending_restore = config
+            .last_track
+            .clone()
+            .map(|p| (p, config.last_position_secs.unwrap_or(0.0)));
         let mut app = Self {
             config,
             playlist: Playlist::new(),
@@ -57,6 +66,8 @@ impl RustampApp {
             seek_drag: None,
             status: None,
             analyzer: SpectrumAnalyzer::new(),
+            pending_restore,
+            last_pos_save: Instant::now(),
         };
         app.rescan();
         app
@@ -88,9 +99,14 @@ impl RustampApp {
                     self.playlist.set_duration(track_index, d);
                 }
             }
-            Err(e) => self.set_status(format!("Cannot play {}: {e}", path.display())),
+            Err(e) => {
+                self.set_status(format!("Cannot play {}: {e}", path.display()));
+                self.selected = Some(track_index);
+                return;
+            }
         }
         self.selected = Some(track_index);
+        self.save_position();
     }
 
     fn play_selected(&mut self, track_index: usize) {
@@ -106,7 +122,10 @@ impl RustampApp {
             return;
         };
         match player.state {
-            PlayState::Playing => player.pause(),
+            PlayState::Playing => {
+                player.pause();
+                self.save_position();
+            }
             PlayState::Paused => player.resume(),
             PlayState::Stopped => {
                 let idx = self.selected.or(self.playlist.current_index());
@@ -124,6 +143,11 @@ impl RustampApp {
     fn stop(&mut self) {
         if let Some(player) = &mut self.player {
             player.stop();
+        }
+        // Winamp-style stop rewinds to 0:00 — resume starts the track over.
+        if self.config.last_track.is_some() {
+            self.config.last_position_secs = Some(0.0);
+            let _ = self.config.save();
         }
     }
 
@@ -192,6 +216,42 @@ impl RustampApp {
         })
     }
 
+    /// Persist the current track + playback position so the next launch can
+    /// resume where the user left off.
+    fn save_position(&mut self) {
+        if let Some(idx) = self.playlist.current_index() {
+            self.config.last_track = Some(self.playlist.tracks[idx].path.clone());
+            self.config.last_position_secs = Some(self.current_position().as_secs_f64());
+        } else {
+            self.config.last_track = None;
+            self.config.last_position_secs = None;
+        }
+        let _ = self.config.save();
+        self.last_pos_save = Instant::now();
+    }
+
+    /// Called once the startup scan completes: reload the last-played track,
+    /// seek to the saved position, and pause — the user presses Space to
+    /// continue rather than getting blasted by music on launch.
+    fn restore_position(&mut self) {
+        let Some((path, pos)) = self.pending_restore.take() else {
+            return;
+        };
+        let Some(idx) = self.playlist.tracks.iter().position(|t| t.path == path) else {
+            return;
+        };
+        self.play_index(idx);
+        if let Some(player) = &mut self.player {
+            player.seek(Duration::from_secs_f64(pos));
+            player.pause();
+        }
+        // play_index recorded position ~0; put back where we actually were.
+        self.config.last_position_secs = Some(pos);
+        if let Some(t) = self.playlist.current() {
+            self.set_status(format!("Resumed at {}", t.display_title()));
+        }
+    }
+
     /// Drag-and-drop: directories become watch folders; loose audio files
     /// are appended to the playlist (session-only until they land inside a
     /// watched folder) and the first one starts playing.
@@ -252,6 +312,7 @@ impl eframe::App for RustampApp {
                     self.playlist.set_tracks(tracks, &mut rand::rng());
                     self.scan_rx = None;
                     self.set_status(format!("Library scan complete: {n} tracks"));
+                    self.restore_position();
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     ctx.request_repaint_after(Duration::from_millis(100));
@@ -278,6 +339,9 @@ impl eframe::App for RustampApp {
             .player
             .as_ref()
             .is_some_and(|p| p.state == PlayState::Playing);
+        if playing && self.last_pos_save.elapsed() >= POSITION_SAVE_INTERVAL {
+            self.save_position();
+        }
 
         // Feed the spectrum analyzer: live samples while playing, silence
         // otherwise so the bars fall gracefully on pause/stop.
@@ -321,6 +385,10 @@ impl eframe::App for RustampApp {
                     });
                 });
         }
+    }
+
+    fn on_exit(&mut self) {
+        self.save_position();
     }
 }
 
