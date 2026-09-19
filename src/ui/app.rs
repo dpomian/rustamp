@@ -18,6 +18,33 @@ const ROW_HEIGHT: f32 = 22.0;
 /// How often the playback position is checkpointed to disk while playing.
 const POSITION_SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
+/// egui's bundled fonts lack geometric-shape glyphs (▲▼ in the sort
+/// headers). Register a macOS symbol font as a fallback so they render —
+/// appended last, so it's only consulted for glyphs the default font
+/// doesn't have. No-op off macOS.
+fn install_fallback_font(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/Apple Symbols.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ];
+    let Some(bytes) = CANDIDATES.iter().find_map(|p| std::fs::read(p).ok()) else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "system-symbols".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("system-symbols".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
 pub struct RustampApp {
     config: Config,
     playlist: Playlist,
@@ -38,7 +65,8 @@ pub struct RustampApp {
 }
 
 impl RustampApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        install_fallback_font(&cc.egui_ctx);
         let config = Config::load();
         let player = match AudioPlayer::new() {
             Ok(p) => {
