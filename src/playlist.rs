@@ -1,5 +1,7 @@
-use rand::Rng;
+use std::collections::HashSet;
+
 use rand::seq::SliceRandom;
+use rand::{Rng, RngExt};
 
 use crate::library::Track;
 
@@ -142,6 +144,36 @@ impl Playlist {
         }
     }
 
+    /// Append tracks that aren't already in the playlist (matched by path).
+    /// New tracks join the play order at the end, or at random positions
+    /// when shuffle is on. Returns how many were added.
+    pub fn add_tracks(&mut self, new_tracks: Vec<Track>, rng: &mut impl Rng) -> usize {
+        let mut existing: HashSet<_> = self.tracks.iter().map(|t| t.path.clone()).collect();
+        let mut added = 0;
+        for track in new_tracks {
+            if !existing.insert(track.path.clone()) {
+                continue;
+            }
+            let idx = self.tracks.len();
+            self.tracks.push(track);
+            added += 1;
+            if self.shuffle {
+                let pos = rng.random_range(0..=self.order.len());
+                self.order.insert(pos, idx);
+                // Inserting at or before the cursor shifts the current
+                // track right — keep the cursor on it.
+                if let Some(c) = self.cursor
+                    && pos <= c
+                {
+                    self.cursor = Some(c + 1);
+                }
+            } else {
+                self.order.push(idx);
+            }
+        }
+        added
+    }
+
     /// Update a track's duration once the decoder reports the real value.
     pub fn set_duration(&mut self, track_index: usize, duration: std::time::Duration) {
         if let Some(track) = self.tracks.get_mut(track_index) {
@@ -271,6 +303,37 @@ mod tests {
         let tracks = vec![track("new"), track("t0"), track("t1"), track("t2")];
         p.set_tracks(tracks, &mut rng);
         assert_eq!(p.current().unwrap().title.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn add_tracks_appends_to_order() {
+        let mut p = playlist(2);
+        let mut rng = StdRng::seed_from_u64(1);
+        assert_eq!(p.add_tracks(vec![track("extra")], &mut rng), 1);
+        assert_eq!(p.tracks.len(), 3);
+        assert_eq!(p.order, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn add_tracks_deduplicates_by_path() {
+        let mut p = playlist(2);
+        let mut rng = StdRng::seed_from_u64(1);
+        assert_eq!(p.add_tracks(vec![track("t0"), track("new")], &mut rng), 1);
+        assert_eq!(p.tracks.len(), 3);
+    }
+
+    #[test]
+    fn add_tracks_keeps_cursor_on_current_track_when_shuffled() {
+        let mut p = playlist(5);
+        let mut rng = StdRng::seed_from_u64(9);
+        p.select(2);
+        p.set_shuffle(true, &mut rng);
+        let current = p.current_index();
+        p.add_tracks(vec![track("x"), track("y")], &mut rng);
+        assert_eq!(p.current_index(), current);
+        let mut sorted = p.order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..7).collect::<Vec<_>>());
     }
 
     #[test]

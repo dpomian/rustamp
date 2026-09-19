@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,6 +21,7 @@ pub struct RustampApp {
     player: Option<AudioPlayer>,
     audio_error: Option<String>,
     scan_rx: Option<Receiver<Vec<Track>>>,
+    extra_tracks: Vec<Track>,
     selected: Option<usize>,
     filter: String,
     seek_drag: Option<Duration>,
@@ -49,6 +51,7 @@ impl RustampApp {
             player,
             audio_error,
             scan_rx: None,
+            extra_tracks: Vec::new(),
             selected: None,
             filter: String::new(),
             seek_drag: None,
@@ -188,6 +191,47 @@ impl RustampApp {
                 .and_then(|i| self.playlist.tracks[i].duration)
         })
     }
+
+    /// Drag-and-drop: directories become watch folders; loose audio files
+    /// are appended to the playlist (session-only until they land inside a
+    /// watched folder) and the first one starts playing.
+    fn handle_dropped(&mut self, paths: Vec<PathBuf>) {
+        let mut folders_added = 0;
+        let mut new_tracks = Vec::new();
+        for path in paths {
+            if path.is_dir() {
+                if self.config.add_folder(path) {
+                    folders_added += 1;
+                }
+            } else if library::is_audio(&path)
+                && !self.extra_tracks.iter().any(|t| t.path == path)
+                && !self.playlist.tracks.iter().any(|t| t.path == path)
+            {
+                new_tracks.push(library::track_from_path(&path));
+            }
+        }
+
+        if folders_added > 0 {
+            let _ = self.config.save();
+            self.rescan();
+        }
+
+        let mut parts = Vec::new();
+        if folders_added > 0 {
+            parts.push(format!("{folders_added} folder(s) added"));
+        }
+        if !new_tracks.is_empty() {
+            let n = new_tracks.len();
+            self.extra_tracks.extend(new_tracks.iter().cloned());
+            self.playlist.add_tracks(new_tracks, &mut rand::rng());
+            // add_tracks appends, so the first dropped file sits at len - n.
+            self.play_selected(self.playlist.tracks.len() - n);
+            parts.push(format!("{n} track(s) added"));
+        }
+        if !parts.is_empty() {
+            self.set_status(format!("Dropped: {}", parts.join(", ")));
+        }
+    }
 }
 
 impl eframe::App for RustampApp {
@@ -196,6 +240,14 @@ impl eframe::App for RustampApp {
         if let Some(rx) = &self.scan_rx {
             match rx.try_recv() {
                 Ok(tracks) => {
+                    // Loose drag-and-dropped files aren't inside watched
+                    // folders — merge them back in so a rescan keeps them.
+                    let mut tracks = tracks;
+                    for extra in &self.extra_tracks {
+                        if !tracks.iter().any(|t| t.path == extra.path) {
+                            tracks.push(extra.clone());
+                        }
+                    }
                     let n = tracks.len();
                     self.playlist.set_tracks(tracks, &mut rand::rng());
                     self.scan_rx = None;
@@ -206,6 +258,17 @@ impl eframe::App for RustampApp {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => self.scan_rx = None,
             }
+        }
+
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.handle_dropped(dropped);
         }
 
         self.maybe_auto_advance();
@@ -247,6 +310,17 @@ impl eframe::App for RustampApp {
         self.ui_bottom(ui);
         self.ui_folders(ui);
         self.ui_playlist(ui);
+
+        if ui.ctx().input(|i| !i.raw.hovered_files.is_empty()) {
+            egui::Area::new(egui::Id::new("drop_hint"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(RichText::new("Drop folders or tracks to add them").color(ACCENT));
+                    });
+                });
+        }
     }
 }
 

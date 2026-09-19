@@ -43,6 +43,19 @@ fn read_tags(
     )
 }
 
+/// Build a Track for a single file — e.g. a drag-and-dropped file that is
+/// not inside a watched folder.
+pub fn track_from_path(path: &Path) -> Track {
+    let (title, artist, album, duration) = read_tags(path);
+    Track {
+        path: path.to_path_buf(),
+        title,
+        artist,
+        album,
+        duration,
+    }
+}
+
 /// Recursively collect every supported audio file under `folder`.
 pub fn scan_folder(folder: &Path) -> Vec<Track> {
     WalkDir::new(folder)
@@ -52,16 +65,7 @@ pub fn scan_folder(folder: &Path) -> Vec<Track> {
         .filter(|entry| entry.file_type().is_file())
         .map(|entry| entry.into_path())
         .filter(|path| is_audio(path))
-        .map(|path| {
-            let (title, artist, album, duration) = read_tags(&path);
-            Track {
-                path,
-                title,
-                artist,
-                album,
-                duration,
-            }
-        })
+        .map(|path| track_from_path(&path))
         .collect()
 }
 
