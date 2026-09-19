@@ -1,10 +1,3 @@
-mod app;
-mod config;
-mod library;
-mod player;
-mod playlist;
-mod visualizer;
-
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -16,6 +9,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Rustamp",
         options,
-        Box::new(|cc| Ok(Box::new(app::RustampApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(rustamp::ui::RustampApp::new(cc)))),
     )
 }

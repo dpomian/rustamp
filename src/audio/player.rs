@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 
-use crate::visualizer::{SampleBuffer, SampleTap};
+use super::{SampleBuffer, SampleTap};
 
 #[derive(Debug)]
 pub enum AudioError {
