@@ -12,7 +12,7 @@ Built with [egui/eframe](https://github.com/emilk/egui) for the UI and
 
 - Watch folders — recursively scans for audio files, deduplicates, reads tags
 - Drag & drop — drop folders to watch them, or drop files to play them
-- Playlist with filter/search, shuffle, and repeat (off / all / one)
+- Playlist with filter/search, sortable columns, shuffle, and repeat (off / all / one)
 - Play, pause, stop, prev/next, seek bar, volume control
 - Real-time spectrum analyzer fed from the decoded audio stream
 - Persistent config (folders + volume) in your platform config dir

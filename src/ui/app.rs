@@ -4,11 +4,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontId, RichText, Ui};
+use egui_extras::{Column, TableBuilder};
 
 use crate::audio::{AudioPlayer, FFT_SIZE, PlayState, SpectrumAnalyzer};
 use crate::config::Config;
 use crate::library::{self, Track};
-use crate::playlist::Playlist;
+use crate::playlist::{Playlist, SortKey};
 
 use super::widgets::{format_time, marquee, spectrum};
 
@@ -32,6 +33,8 @@ pub struct RustampApp {
     /// Track + position to restore once the startup scan finishes.
     pending_restore: Option<(PathBuf, f64)>,
     last_pos_save: Instant,
+    sort_key: SortKey,
+    sort_asc: bool,
 }
 
 impl RustampApp {
@@ -68,6 +71,8 @@ impl RustampApp {
             analyzer: SpectrumAnalyzer::new(),
             pending_restore,
             last_pos_save: Instant::now(),
+            sort_key: SortKey::Artist,
+            sort_asc: true,
         };
         app.rescan();
         app
@@ -249,6 +254,37 @@ impl RustampApp {
         self.config.last_position_secs = Some(pos);
         if let Some(t) = self.playlist.current() {
             self.set_status(format!("Resumed at {}", t.display_title()));
+        }
+    }
+
+    /// Clickable playlist column header: click selects that sort key,
+    /// clicking the active key toggles direction. `selected` is a track
+    /// index, so it's re-anchored by path across the reorder.
+    fn sort_header(&mut self, ui: &mut Ui, key: SortKey, label: &str) {
+        let active = self.sort_key == key;
+        let arrow = if active {
+            if self.sort_asc { " ▲" } else { " ▼" }
+        } else {
+            ""
+        };
+        let mut text = RichText::new(format!("{label}{arrow}"));
+        if active {
+            text = text.color(ACCENT);
+        }
+        let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+        if resp.clicked() {
+            if active {
+                self.sort_asc = !self.sort_asc;
+            } else {
+                self.sort_key = key;
+                self.sort_asc = true;
+            }
+            let selected_path = self
+                .selected
+                .and_then(|i| self.playlist.tracks.get(i).map(|t| t.path.clone()));
+            self.playlist.sort_tracks(key, self.sort_asc);
+            self.selected =
+                selected_path.and_then(|p| self.playlist.tracks.iter().position(|t| t.path == p));
         }
     }
 
@@ -664,51 +700,79 @@ impl RustampApp {
                 .collect();
 
             let current = self.playlist.current_index();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
-                    for row in range {
-                        let track_index = visible[row];
+            TableBuilder::new(ui)
+                .id_salt("playlist")
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::exact(30.0))
+                .column(Column::remainder().at_least(120.0).clip(true))
+                .column(Column::remainder().at_least(160.0).clip(true))
+                .column(Column::remainder().at_least(120.0).clip(true))
+                .column(Column::exact(48.0))
+                .header(ROW_HEIGHT, |mut header| {
+                    header.col(|ui| {
+                        ui.label(RichText::new("#").weak());
+                    });
+                    header.col(|ui| self.sort_header(ui, SortKey::Artist, "Artist"));
+                    header.col(|ui| self.sort_header(ui, SortKey::Title, "Title"));
+                    header.col(|ui| self.sort_header(ui, SortKey::Album, "Album"));
+                    header.col(|ui| self.sort_header(ui, SortKey::Duration, "Time"));
+                })
+                .body(|body| {
+                    body.rows(ROW_HEIGHT, visible.len(), |mut row| {
+                        let track_index = visible[row.index()];
+                        let row_num = row.index() + 1;
                         // Copy display data out so click handlers can mutate self.
-                        let (title, track_duration) = {
+                        let (artist, title, album, track_duration) = {
                             let t = &self.playlist.tracks[track_index];
-                            (t.display_title(), t.duration)
+                            (
+                                t.artist.clone().unwrap_or_default(),
+                                t.title.clone().unwrap_or_else(|| {
+                                    t.path
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().into_owned())
+                                        .unwrap_or_default()
+                                }),
+                                t.album.clone().unwrap_or_default(),
+                                t.duration,
+                            )
                         };
                         let is_current = current == Some(track_index);
                         let is_selected = self.selected == Some(track_index);
+                        row.set_selected(is_selected);
 
-                        ui.horizontal(|ui| {
-                            ui.add_sized(
-                                [40.0, ROW_HEIGHT],
-                                egui::Label::new(RichText::new(format!("{}", row + 1)).weak()),
-                            );
-                            let mut text = RichText::new(title);
-                            if is_current {
-                                text = text.color(ACCENT).strong();
-                            }
-                            let resp = ui.selectable_label(is_selected, text);
-                            if resp.clicked() {
-                                self.selected = Some(track_index);
-                            }
-                            if resp.double_clicked() {
-                                self.play_selected(track_index);
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            track_duration
-                                                .map(format_time)
-                                                .unwrap_or_else(|| "--:--".into()),
-                                        )
-                                        .weak()
-                                        .monospace(),
-                                    );
-                                },
+                        row.col(|ui| {
+                            ui.label(RichText::new(format!("{row_num}")).weak());
+                        });
+                        for text in [artist, title, album] {
+                            row.col(|ui| {
+                                let mut text = RichText::new(text);
+                                if is_current {
+                                    text = text.color(ACCENT).strong();
+                                }
+                                ui.add(egui::Label::new(text).truncate());
+                            });
+                        }
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(
+                                    track_duration
+                                        .map(format_time)
+                                        .unwrap_or_else(|| "--:--".into()),
+                                )
+                                .weak()
+                                .monospace(),
                             );
                         });
-                    }
+
+                        let resp = row.response();
+                        if resp.clicked() {
+                            self.selected = Some(track_index);
+                        }
+                        if resp.double_clicked() {
+                            self.play_selected(track_index);
+                        }
+                    });
                 });
         });
     }

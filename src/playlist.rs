@@ -1,4 +1,6 @@
+use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::time::Duration;
 
 use rand::seq::SliceRandom;
 use rand::{Rng, RngExt};
@@ -29,6 +31,15 @@ impl RepeatMode {
             Self::One => "Repeat: One",
         }
     }
+}
+
+/// Column the playlist display can be sorted by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Artist,
+    Title,
+    Album,
+    Duration,
 }
 
 /// The loaded tracks plus the order they play in.
@@ -144,6 +155,29 @@ impl Playlist {
         }
     }
 
+    /// Reorder `tracks` by `key`. The play `order` is remapped through the
+    /// same permutation, so the cursor still resolves to the same track and
+    /// the upcoming sequence is unchanged — only display order moves.
+    /// Missing fields sort last when ascending.
+    pub fn sort_tracks(&mut self, key: SortKey, ascending: bool) {
+        let mut perm: Vec<usize> = (0..self.tracks.len()).collect();
+        perm.sort_by(|&a, &b| {
+            let ord = cmp_tracks(&self.tracks[a], &self.tracks[b], key);
+            if ascending { ord } else { ord.reverse() }
+        });
+
+        // inv[old_index] = new_index
+        let mut inv = vec![0usize; self.tracks.len()];
+        for (new_idx, &old_idx) in perm.iter().enumerate() {
+            inv[old_idx] = new_idx;
+        }
+        let old = std::mem::take(&mut self.tracks);
+        self.tracks = perm.iter().map(|&i| old[i].clone()).collect();
+        for o in &mut self.order {
+            *o = inv[*o];
+        }
+    }
+
     /// Append tracks that aren't already in the playlist (matched by path).
     /// New tracks join the play order at the end, or at random positions
     /// when shuffle is on. Returns how many were added.
@@ -185,6 +219,38 @@ impl Playlist {
 impl Default for Playlist {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Lowercased tag value; `None` sorts last (ascending) via the bool flag.
+fn tag_key(tag: &Option<String>) -> (bool, String) {
+    (tag.is_none(), tag.as_deref().unwrap_or("").to_lowercase())
+}
+
+/// Title/display-name ordering with a path tiebreak for total order.
+fn display_cmp(a: &Track, b: &Track) -> Ordering {
+    a.display_title()
+        .to_lowercase()
+        .cmp(&b.display_title().to_lowercase())
+        .then_with(|| a.path.cmp(&b.path))
+}
+
+fn cmp_tracks(a: &Track, b: &Track, key: SortKey) -> Ordering {
+    match key {
+        SortKey::Artist => tag_key(&a.artist)
+            .cmp(&tag_key(&b.artist))
+            .then_with(|| display_cmp(a, b)),
+        SortKey::Title => {
+            display_cmp(a, b).then_with(|| tag_key(&a.artist).cmp(&tag_key(&b.artist)))
+        }
+        SortKey::Album => tag_key(&a.album)
+            .cmp(&tag_key(&b.album))
+            .then_with(|| display_cmp(a, b)),
+        SortKey::Duration => a
+            .duration
+            .unwrap_or(Duration::MAX)
+            .cmp(&b.duration.unwrap_or(Duration::MAX))
+            .then_with(|| display_cmp(a, b)),
     }
 }
 
@@ -334,6 +400,40 @@ mod tests {
         let mut sorted = p.order.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, (0..7).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn sort_by_title_reorders_and_keeps_current() {
+        let mut p = Playlist::new();
+        let mut rng = StdRng::seed_from_u64(1);
+        p.set_tracks(vec![track("b"), track("a"), track("c")], &mut rng);
+        p.select(0); // "b"
+        p.sort_tracks(SortKey::Title, true);
+        let titles: Vec<_> = p.tracks.iter().map(|t| t.title.clone().unwrap()).collect();
+        assert_eq!(titles, vec!["a", "b", "c"]);
+        assert_eq!(p.current().unwrap().title.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn sort_descending_reverses_order() {
+        let mut p = playlist(3);
+        p.sort_tracks(SortKey::Title, false);
+        let titles: Vec<_> = p.tracks.iter().map(|t| t.title.clone().unwrap()).collect();
+        assert_eq!(titles, vec!["t2", "t1", "t0"]);
+    }
+
+    #[test]
+    fn sort_keeps_order_a_valid_permutation_when_shuffled() {
+        let mut p = playlist(6);
+        let mut rng = StdRng::seed_from_u64(3);
+        p.select(1);
+        p.set_shuffle(true, &mut rng);
+        let cur = p.current_index();
+        p.sort_tracks(SortKey::Artist, true);
+        let mut sorted = p.order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..6).collect::<Vec<_>>());
+        assert_eq!(p.current_index(), cur);
     }
 
     #[test]
