@@ -31,7 +31,7 @@ src/
   library/
     mod.rs           re-exports
     track.rs         Track model, display_title(), matches_filter()
-    scan.rs          is_mp3(), scan_folder() (walkdir + id3), scan_folders() (dedup + sort)
+    scan.rs          is_audio(), scan_folder() (walkdir + lofty), scan_folders() (dedup + sort)
 
   audio/
     mod.rs           re-exports
@@ -205,7 +205,7 @@ deliberate save trigger rather than saving per-frame.
 | ------------ | ----- |
 | Add a keyboard shortcut | `RustampApp::handle_keys` (respect `egui_wants_keyboard_input`) |
 | Add a persisted setting | `Config` field + `#[serde(default)]` + a save call site in `app.rs` |
-| Support a new audio format | `is_mp3` + the `scan_folder` filter (rodio already decodes most formats via symphonia) |
+| Support a new audio format | `AUDIO_EXTENSIONS` in `scan.rs` (rodio already decodes most formats via symphonia) |
 | Change sort/filter behavior | `scan_folders` sort key / `matches_filter` |
 | Add a play mode (e.g. repeat-off variant) | `RepeatMode` + `advance_auto`/`step_manual` in `playlist.rs` |
 | Change the visualizer look | `widgets::spectrum` (paint only) or `SpectrumAnalyzer` (signal processing) |
@@ -231,7 +231,7 @@ deliberate save trigger rather than saving per-frame.
 | `eframe`/`egui` | window + immediate-mode UI |
 | `rodio` | audio output + decoding (symphonia under the hood) |
 | `rustfft` | FFT for the spectrum analyzer |
-| `id3` | ID3 tag reading during scan |
+| `lofty` | tag reading during scan (ID3, Vorbis comments, MP4 atoms, …) |
 | `walkdir` | recursive folder traversal |
 | `rfd` | native folder-picker dialog |
 | `dirs` | platform config directory |

@@ -7,7 +7,7 @@ license = "MIT"
 [dependencies]
 dirs = "7.0.0"
 eframe = "0.36.2"
-id3 = "1.17.1"
+lofty = "0.25.3"
 rand = "0.10.2"
 rfd = "0.17.2"
 rodio = "0.22.2"

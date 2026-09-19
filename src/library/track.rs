@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// A single MP3 file discovered in a watched folder.
+/// A single audio file discovered in a watched folder.
 #[derive(Debug, Clone)]
 pub struct Track {
     pub path: PathBuf,
