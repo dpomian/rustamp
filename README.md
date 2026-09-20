@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" alt="Rustamp — it really whips the crab's ass" width="420">
+
 # Rustamp
 
 **A Winamp-inspired desktop music player written in Rust.**

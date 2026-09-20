@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, FontId, RichText, Ui};
+use eframe::egui::{self, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
 use crate::audio::{AudioPlayer, FFT_SIZE, PlayState, SpectrumAnalyzer};
@@ -76,6 +76,7 @@ pub struct RustampApp {
 impl RustampApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_fallback_font(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         // egui's default scrollbars float over the content and widen on
         // hover, covering the row above them — solid bars reserve their
         // own space in the layout instead.
@@ -548,11 +549,9 @@ impl RustampApp {
         let resp = egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("RUSTAMP")
-                        .font(FontId::monospace(18.0))
-                        .color(accent)
-                        .strong(),
+                ui.add(
+                    egui::Image::new(egui::include_image!("../../assets/logo.png"))
+                        .max_height(36.0),
                 );
                 ui.separator();
                 // Duration and kHz only exist once a file is loaded in the

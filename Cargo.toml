@@ -7,7 +7,7 @@ license = "MIT"
 [dependencies]
 dirs = "7.0.0"
 eframe = "0.36.2"
-egui_extras = "0.36"
+egui_extras = { version = "0.36", features = ["image"] }
 lofty = "0.25.3"
 rand = "0.10.2"
 rfd = "0.17.2"
