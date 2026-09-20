@@ -31,20 +31,27 @@ pub fn marquee(ui: &mut Ui, text: &str, color: Color32) {
         .galley(egui::pos2(x, y), galley, color);
 }
 
+/// Tiny gap between adjacent equalizer bars.
+const BAR_GAP: f32 = 2.0;
+
+/// Width of one bar when `NUM_BANDS` bars span `width` edge to edge with
+/// `BAR_GAP` between each pair.
+fn bar_width(width: f32) -> f32 {
+    ((width - 8.0 - BAR_GAP * (NUM_BANDS as f32 - 1.0)) / NUM_BANDS as f32).max(1.0)
+}
+
 /// Winamp-style spectrum analyzer: segmented bars with a brighter peak cell
 /// that falls more slowly than the bar itself.
 pub fn spectrum(ui: &mut Ui, bars: &[f32; NUM_BANDS], peaks: &[f32; NUM_BANDS]) {
     const HEIGHT: f32 = 64.0;
     const SEG_H: f32 = 5.0;
     const SEG_GAP: f32 = 2.0;
-    const BAR_GAP: f32 = 3.0;
 
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 2.0, Color32::from_rgb(8, 12, 8));
 
-    let n = bars.len() as f32;
-    let bar_w = ((rect.width() - 8.0 - BAR_GAP * (n - 1.0)) / n).max(1.0);
+    let bar_w = bar_width(rect.width());
     let pitch = SEG_H + SEG_GAP;
     let segs = ((rect.height() - 4.0) / pitch).floor().max(1.0) as i32;
 
@@ -78,5 +85,23 @@ pub fn spectrum(ui: &mut Ui, bars: &[f32; NUM_BANDS], peaks: &[f32; NUM_BANDS]) 
                 painter.rect_filled(seg_rect, 1.0, color_at(frac, false));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bars_span_the_full_width() {
+        let width = 512.0;
+        let bar_w = bar_width(width);
+        let total = NUM_BANDS as f32 * bar_w + (NUM_BANDS as f32 - 1.0) * BAR_GAP;
+        assert!((total - (width - 8.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn degenerate_width_still_yields_drawable_bars() {
+        assert!(bar_width(0.0) >= 1.0);
     }
 }
