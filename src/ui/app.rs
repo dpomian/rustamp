@@ -3,17 +3,17 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, FontId, RichText, Ui};
+use eframe::egui::{self, FontId, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
 use crate::audio::{AudioPlayer, FFT_SIZE, PlayState, SpectrumAnalyzer};
 use crate::config::Config;
 use crate::library::{self, Track};
 use crate::playlist::{Playlist, SortKey};
+use crate::skin::Skin;
 
 use super::widgets::{format_time, marquee, now_playing, spectrum};
 
-const ACCENT: Color32 = Color32::from_rgb(0, 255, 128); // winamp-ish green
 const ROW_HEIGHT: f32 = 22.0;
 /// Fixed window geometry — the window is not user-resizable, so the app
 /// resizes it itself when the library section is shown/hidden.
@@ -82,6 +82,7 @@ impl RustampApp {
         cc.egui_ctx
             .all_styles_mut(|style| style.spacing.scroll.floating = false);
         let config = Config::load();
+        config.skin.apply(&cc.egui_ctx);
         let player = match AudioPlayer::new() {
             Ok(p) => {
                 p.set_volume(config.volume);
@@ -313,7 +314,7 @@ impl RustampApp {
         };
         let mut text = RichText::new(format!("{label}{arrow}"));
         if active {
-            text = text.color(ACCENT);
+            text = text.color(self.config.skin.accent);
         }
         let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
         if resp.clicked() {
@@ -480,7 +481,10 @@ impl eframe::App for RustampApp {
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.label(RichText::new("Drop folders or tracks to add them").color(ACCENT));
+                        ui.label(
+                            RichText::new("Drop folders or tracks to add them")
+                                .color(self.config.skin.accent),
+                        );
                     });
                 });
         }
@@ -540,13 +544,14 @@ impl RustampApp {
     /// Returns the panel's height so the window can shrink to fit when the
     /// library section is hidden.
     fn ui_top(&mut self, ui: &mut Ui) -> f32 {
+        let accent = self.config.skin.accent;
         let resp = egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("RUSTAMP")
                         .font(FontId::monospace(18.0))
-                        .color(ACCENT)
+                        .color(accent)
                         .strong(),
                 );
                 ui.separator();
@@ -581,12 +586,12 @@ impl RustampApp {
                         self.show_library = !self.show_library;
                     }
                     ui.separator();
-                    marquee(ui, &format!("{prefix}{line}"), ACCENT);
+                    marquee(ui, &format!("{prefix}{line}"), accent);
                 });
             });
             let bars = self.analyzer.bars;
             let peaks = self.analyzer.peaks;
-            spectrum(ui, &bars, &peaks);
+            spectrum(ui, &bars, &peaks, &self.config.skin.spectrum);
             ui.add_space(4.0);
             self.ui_seek(ui);
             ui.add_space(2.0);
@@ -598,12 +603,13 @@ impl RustampApp {
 
     /// Seek bar with time labels.
     fn ui_seek(&mut self, ui: &mut Ui) {
+        let text_dim = self.config.skin.text_dim;
         let duration = self.current_duration();
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format_time(self.current_position()))
                     .monospace()
-                    .color(Color32::LIGHT_GRAY),
+                    .color(text_dim),
             );
 
             let position = self.current_position();
@@ -635,13 +641,14 @@ impl RustampApp {
             ui.label(
                 RichText::new(duration.map(format_time).unwrap_or_else(|| "--:--".into()))
                     .monospace()
-                    .color(Color32::LIGHT_GRAY),
+                    .color(text_dim),
             );
         });
     }
 
     /// Transport buttons + volume + modes, sized for the narrow window.
     fn ui_transport(&mut self, ui: &mut Ui) {
+        let accent = self.config.skin.accent;
         ui.horizontal(|ui| {
             if ui.button("<<").on_hover_text("Previous").clicked() {
                 self.step(false);
@@ -651,7 +658,7 @@ impl RustampApp {
                 _ => ">",
             };
             if ui
-                .button(RichText::new(play_label).color(ACCENT).strong())
+                .button(RichText::new(play_label).color(accent).strong())
                 .on_hover_text("Play / pause")
                 .clicked()
             {
@@ -667,7 +674,7 @@ impl RustampApp {
             ui.separator();
 
             let shuffle_text = if self.playlist.shuffle {
-                RichText::new("Shuffle").color(ACCENT)
+                RichText::new("Shuffle").color(accent)
             } else {
                 RichText::new("Shuffle")
             };
@@ -699,6 +706,24 @@ impl RustampApp {
             if resp.drag_stopped() {
                 let _ = self.config.save();
             }
+
+            ui.separator();
+
+            // Compact skin picker — the transport row is tight, so it gets
+            // a fixed narrow width and shows just the preset name.
+            let current = self.config.skin.preset_name().unwrap_or("custom");
+            egui::ComboBox::from_id_salt("skin_picker")
+                .width(72.0)
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for (name, skin) in Skin::presets() {
+                        if ui.selectable_label(current == name, name).clicked() {
+                            self.config.skin = skin;
+                            self.config.skin.apply(ui.ctx());
+                            let _ = self.config.save();
+                        }
+                    }
+                });
         });
     }
 
@@ -754,6 +779,7 @@ impl RustampApp {
     }
 
     fn ui_playlist(&mut self, ui: &mut Ui) {
+        let accent = self.config.skin.accent;
         egui::CentralPanel::default().show(ui, |ui| {
             // Labels are selectable app-wide (egui default); playlist text
             // is display-only — right-click a row to copy its tags.
@@ -784,7 +810,7 @@ impl RustampApp {
                 ui.label(RichText::new(msg.as_str()).weak());
             }
             if let Some(err) = &self.audio_error {
-                ui.label(RichText::new(err.as_str()).color(Color32::RED));
+                ui.label(RichText::new(err.as_str()).color(self.config.skin.error));
             }
             ui.separator();
 
@@ -858,7 +884,7 @@ impl RustampApp {
                                     row.col(|ui| {
                                         let mut text = RichText::new(text.as_str());
                                         if is_current {
-                                            text = text.color(ACCENT).strong();
+                                            text = text.color(accent).strong();
                                         }
                                         ui.add(egui::Label::new(text).truncate());
                                     });
