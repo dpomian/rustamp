@@ -4,6 +4,7 @@ use eframe::egui::{self, Color32, FontId, Sense, Ui, vec2};
 
 use crate::audio::NUM_BANDS;
 use crate::library::Track;
+use crate::skin::SpectrumColors;
 
 pub fn format_time(d: Duration) -> String {
     let secs = d.as_secs();
@@ -102,14 +103,19 @@ fn bar_width(width: f32) -> f32 {
 
 /// Winamp-style spectrum analyzer: segmented bars with a brighter peak cell
 /// that falls more slowly than the bar itself.
-pub fn spectrum(ui: &mut Ui, bars: &[f32; NUM_BANDS], peaks: &[f32; NUM_BANDS]) {
+pub fn spectrum(
+    ui: &mut Ui,
+    bars: &[f32; NUM_BANDS],
+    peaks: &[f32; NUM_BANDS],
+    colors: &SpectrumColors,
+) {
     const HEIGHT: f32 = 64.0;
     const SEG_H: f32 = 5.0;
     const SEG_GAP: f32 = 2.0;
 
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
     let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, 2.0, Color32::from_rgb(8, 12, 8));
+    painter.rect_filled(rect, 2.0, colors.background);
 
     let bar_w = bar_width(rect.width());
     let pitch = SEG_H + SEG_GAP;
@@ -117,14 +123,14 @@ pub fn spectrum(ui: &mut Ui, bars: &[f32; NUM_BANDS], peaks: &[f32; NUM_BANDS]) 
 
     let color_at = |frac: f32, lit: bool| {
         if !lit {
-            return Color32::from_rgb(18, 30, 20); // ghost grid
+            return colors.ghost;
         }
         if frac < 0.62 {
-            Color32::from_rgb(0, 210, 90)
+            colors.low
         } else if frac < 0.85 {
-            Color32::from_rgb(240, 200, 40)
+            colors.mid
         } else {
-            Color32::from_rgb(255, 60, 40)
+            colors.high
         }
     };
 
@@ -140,7 +146,7 @@ pub fn spectrum(ui: &mut Ui, bars: &[f32; NUM_BANDS], peaks: &[f32; NUM_BANDS]) 
             if s < lit {
                 painter.rect_filled(seg_rect, 1.0, color_at(frac, true));
             } else if s == peak - 1 && peak > lit {
-                painter.rect_filled(seg_rect, 1.0, Color32::from_rgb(255, 240, 200));
+                painter.rect_filled(seg_rect, 1.0, colors.peak);
             } else {
                 painter.rect_filled(seg_rect, 1.0, color_at(frac, false));
             }

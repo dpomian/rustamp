@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::skin::Skin;
+
 fn default_volume() -> f32 {
     1.0
 }
@@ -22,6 +24,9 @@ pub struct Config {
     /// How far into `last_track` playback had reached, in seconds.
     #[serde(default)]
     pub last_position_secs: Option<f64>,
+    /// Color scheme. Missing fields keep the default "winamp" look.
+    #[serde(default)]
+    pub skin: Skin,
 }
 
 impl Default for Config {
@@ -31,6 +36,7 @@ impl Default for Config {
             volume: 1.0,
             last_track: None,
             last_position_secs: None,
+            skin: Skin::default(),
         }
     }
 }
