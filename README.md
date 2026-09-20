@@ -1,6 +1,18 @@
+<div align="center">
+
 # Rustamp
 
-A Winamp-inspired desktop music player written in Rust. Point it at folders
+**A Winamp-inspired desktop music player written in Rust.**
+
+[![Tests](https://github.com/dpomian/rustamp/actions/workflows/test.yml/badge.svg)](https://github.com/dpomian/rustamp/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org)
+[![GitHub stars](https://img.shields.io/github/stars/dpomian/rustamp)](https://github.com/dpomian/rustamp/stargazers)
+[![Rustamp, it really whips the crab's ass](https://img.shields.io/badge/-Rustamp%2C_it_really_whips_the_crab%27s_ass-brightgreen)](https://en.wikipedia.org/wiki/Winamp)
+
+</div>
+
+Point it at folders
 containing audio files (MP3, FLAC, OGG/Vorbis, Opus, M4A/AAC, WAV, AIFF,
 WavPack) and it builds a sorted library from their tags, then plays them
 back with a live spectrum visualizer.
