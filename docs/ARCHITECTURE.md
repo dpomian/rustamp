@@ -23,9 +23,10 @@ Everything else is synchronous, single-threaded, and owned by `RustampApp`.
 ```
 src/
   main.rs            eframe entry point; creates RustampApp
-  lib.rs             crate root; re-exports the five modules
+  lib.rs             crate root; re-exports the six modules
 
-  config.rs          Config: persisted folders + volume (serde_json → platform config dir)
+  config.rs          Config: persisted folders + volume + skin (serde_json → platform config dir)
+  skin.rs            Skin: color theme (presets, "#rrggbb" serde, egui visuals overrides)
   playlist.rs        Playlist: tracks + play order + shuffle/repeat/sort logic (no I/O)
 
   library/
@@ -50,13 +51,16 @@ Dependency direction is strictly one-way:
 ```
 ui ──> playlist ──> library
 ui ──> audio
-ui ──> config
+ui ──> config ──> skin
+ui ──> skin
 ```
 
 `audio`, `library`, `playlist`, and `config` never depend on each other
-(except `playlist` → `library::Track`) and never touch egui. All coordination
-happens in `ui/app.rs`. Keep it that way: if you need two lower modules to
-talk, wire them in `RustampApp`, not via a new cross-module dependency.
+(except `playlist` → `library::Track` and `config` → `skin::Skin`). Only
+`ui` and `skin` touch egui — `skin` uses it for `Color32`/`Visuals` but has
+no widget or layout code. All coordination happens in `ui/app.rs`. Keep it
+that way: if you need two lower modules to talk, wire them in `RustampApp`,
+not via a new cross-module dependency.
 
 ## Threading & shared state
 
@@ -173,9 +177,9 @@ condition or request repaints yourself.
 
 All in `ui/app.rs`, rendered top-to-bottom each frame:
 
-- `ui_top` — title + scrolling now-playing marquee + spectrum widget
-- `ui_bottom` — seek slider + time labels, transport buttons, shuffle/repeat
-  toggles, volume slider
+- `ui_top` — title + scrolling now-playing marquee + spectrum widget +
+  `ui_seek` (seek slider + time labels) + `ui_transport` (transport buttons,
+  shuffle/repeat toggles, volume slider, skin picker)
 - `ui_folders` — left panel: watch-folder list, add/remove, rescan
 - `ui_playlist` — central panel: filter box, status/error lines, virtualized
   track rows (`ScrollArea::show_rows`, fixed `ROW_HEIGHT`)
@@ -198,10 +202,19 @@ Notable mechanics:
 (`dirs::config_dir()`; on macOS `~/Library/Application Support/rustamp/`).
 Missing or corrupt files fall back to defaults — first run is never an error.
 
-**Save points are explicit and infrequent**: folder add/remove and volume
-*drag end* (not every slider tick). If you add a persisted field, add a
-`#[serde(default)]` annotation so old config files keep loading, and pick a
-deliberate save trigger rather than saving per-frame.
+**Save points are explicit and infrequent**: folder add/remove, volume
+*drag end* (not every slider tick), and skin changes from the picker. If
+you add a persisted field, add a `#[serde(default)]` annotation so old
+config files keep loading, and pick a deliberate save trigger rather than
+saving per-frame.
+
+The `skin` field works the same way: it's a full `Skin` value, but every
+field has `#[serde(default)]` (container-level), so a hand-edited config
+with only `{"accent": "#ff0000"}` still loads — missing colors fall back
+to the winamp preset. `Option` fields like `background` are `None` =
+"inherit the egui base visuals"; `Skin::apply()` starts from
+`Visuals::dark()`/`light()` and overrides only what's set. It's applied
+once at startup and again whenever the picker changes it.
 
 ## Where to add things
 
@@ -213,6 +226,7 @@ deliberate save trigger rather than saving per-frame.
 | Change sort/filter behavior | `SortKey`/`sort_tracks` in `playlist.rs`, `matches_filter` in `track.rs` |
 | Add a play mode (e.g. repeat-off variant) | `RepeatMode` + `advance_auto`/`step_manual` in `playlist.rs` |
 | Change the visualizer look | `widgets::spectrum` (paint only) or `SpectrumAnalyzer` (signal processing) |
+| Change colors / add a skin preset | `Skin` + presets in `skin.rs`; picker lists `Skin::presets()` automatically |
 | Add a different visualization | New widget in `widgets.rs` fed from `player.sample_buffer()` — keep `SampleTap` untouched |
 | Add a UI panel | New `ui_*` method on `RustampApp`, called from `ui()` |
 
