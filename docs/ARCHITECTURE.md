@@ -191,8 +191,10 @@ All in `ui/app.rs`, rendered top-to-bottom each frame:
 - `ui_top` — title + scrolling now-playing marquee + spectrum widget +
   `ui_seek` (seek slider + time labels) + `ui_transport` (transport buttons,
   shuffle/repeat toggles, volume slider, skin picker)
-- `ui_folders` — left panel: watch-folder list, add/remove, rescan
-- `ui_playlist` — central panel: filter box, status/error lines, virtualized
+- `ui_folders` — bottom panel (1/3 of the library area): horizontally-wrapped
+  watch-folder list, add/remove, rescan
+- `ui_playlist` — central panel (2/3 of the library area): filter box,
+  status/error lines, virtualized
   track rows (`ScrollArea::show_rows`, fixed `ROW_HEIGHT`)
 
 Notable mechanics:

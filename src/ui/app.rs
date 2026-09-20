@@ -15,6 +15,9 @@ use crate::skin::Skin;
 use super::widgets::{format_time, marquee, now_playing, spectrum};
 
 const ROW_HEIGHT: f32 = 22.0;
+/// Fraction of the library area's height given to the watch-folders pane;
+/// the playlist central panel fills the remaining two thirds.
+const FOLDERS_HEIGHT_FRACTION: f32 = 1.0 / 3.0;
 /// Fixed window geometry — the window is not user-resizable, so the app
 /// resizes it itself when the library section is shown/hidden.
 const WINDOW_WIDTH: f32 = 520.0;
@@ -726,43 +729,48 @@ impl RustampApp {
         });
     }
 
+    /// Bottom pane: watch folders as a horizontally-wrapped strip, sized
+    /// to one third of the library area so the playlist keeps two thirds.
     fn ui_folders(&mut self, ui: &mut Ui) {
-        egui::Panel::left("folders")
-            .resizable(true)
-            .default_size(160.0)
+        let height = ui.available_height() * FOLDERS_HEIGHT_FRACTION;
+        egui::Panel::bottom("folders")
+            .exact_size(height)
             .show(ui, |ui| {
-                ui.heading("Watch folders");
-                ui.add_space(4.0);
-                if ui.button("Add folder…").clicked()
-                    && let Some(dir) = rfd::FileDialog::new().pick_folder()
-                {
-                    if self.config.add_folder(dir.clone()) {
-                        let _ = self.config.save();
+                ui.horizontal(|ui| {
+                    ui.heading("Watch folders");
+                    if ui.button("Add folder…").clicked()
+                        && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                    {
+                        if self.config.add_folder(dir.clone()) {
+                            let _ = self.config.save();
+                            self.rescan();
+                        } else {
+                            self.set_status(format!("{} already watched", dir.display()));
+                        }
+                    }
+                    if ui.button("Rescan now").clicked() {
                         self.rescan();
-                    } else {
-                        self.set_status(format!("{} already watched", dir.display()));
                     }
-                }
-                if ui.button("Rescan now").clicked() {
-                    self.rescan();
-                }
-                ui.add_space(6.0);
+                });
+                ui.add_space(4.0);
                 let mut to_remove = None;
-                egui::ScrollArea::both().show(ui, |ui| {
-                    for folder in &self.config.folders {
-                        ui.horizontal(|ui| {
-                            if ui.small_button("x").clicked() {
-                                to_remove = Some(folder.clone());
-                            }
-                            let full = folder.display().to_string();
-                            ui.label(&full).context_menu(|ui| {
-                                if ui.button("Copy path").clicked() {
-                                    ui.ctx().copy_text(full.clone());
-                                    ui.close();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for folder in &self.config.folders {
+                            ui.horizontal(|ui| {
+                                if ui.small_button("x").clicked() {
+                                    to_remove = Some(folder.clone());
                                 }
+                                let full = folder.display().to_string();
+                                ui.label(&full).context_menu(|ui| {
+                                    if ui.button("Copy path").clicked() {
+                                        ui.ctx().copy_text(full.clone());
+                                        ui.close();
+                                    }
+                                });
                             });
-                        });
-                    }
+                        }
+                    });
                     if self.config.folders.is_empty() {
                         ui.label(
                             RichText::new("No folders yet.\nAdd one to build your library.").weak(),
@@ -929,6 +937,28 @@ impl RustampApp {
                         });
                     self.playlist_table_width = out.content_size.x;
                 });
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui;
+
+    use super::FOLDERS_HEIGHT_FRACTION;
+
+    /// The watch-folders bottom pane gets one third of the library area;
+    /// the playlist central panel fills the remaining two thirds.
+    #[test]
+    fn folders_pane_takes_bottom_third() {
+        egui::__run_test_ui(|ui| {
+            let total = ui.available_height();
+            let folders = egui::Panel::bottom("test_folders")
+                .exact_size(total * FOLDERS_HEIGHT_FRACTION)
+                .show(ui, |_| {});
+            let playlist = egui::CentralPanel::default().show(ui, |_| {});
+            assert!((folders.response.rect.height() - total / 3.0).abs() < 2.0);
+            assert!((playlist.response.rect.height() - total * 2.0 / 3.0).abs() < 2.0);
         });
     }
 }
