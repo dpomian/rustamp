@@ -202,9 +202,11 @@ Notable mechanics:
 - **Seek**: while dragging, `seek_drag` holds the preview position and
   `current_position()` reports it instead of the player's; the actual
   `player.seek()` fires on `drag_stopped`.
-- **Keyboard** (`handle_keys`): skipped entirely while a text widget wants
-  input (`egui_wants_keyboard_input`) so Space doesn't toggle play while
-  typing in the filter box.
+- **Keyboard** (`handle_keys`): skipped while a `TextEdit` is focused
+  (`text_edit_focused`) so Space doesn't toggle play while typing in the
+  filter box. Handled keys are consumed via `consume_key` so a widget that
+  still holds focus (e.g. a just-clicked transport button) can't also
+  react to them.
 - **Errors are non-fatal**: playback/scan problems become `status` bar
   messages that auto-expire after 6s. Only "no audio device" is persistent
   (`audio_error`, shown in red).
@@ -233,7 +235,7 @@ once at startup and again whenever the picker changes it.
 
 | You want to… | Touch |
 | ------------ | ----- |
-| Add a keyboard shortcut | `RustampApp::handle_keys` (respect `egui_wants_keyboard_input`) |
+| Add a keyboard shortcut | `RustampApp::handle_keys` (respect `text_edit_focused`, consume handled keys) |
 | Add a persisted setting | `Config` field + `#[serde(default)]` + a save call site in `app.rs` |
 | Support a new audio format | `AUDIO_EXTENSIONS` in `scan.rs` (rodio already decodes most formats via symphonia) |
 | Change sort/filter behavior | `SortKey`/`sort_tracks` in `playlist.rs`, `matches_filter` in `track.rs` |

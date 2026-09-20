@@ -501,40 +501,37 @@ impl eframe::App for RustampApp {
 
 impl RustampApp {
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
-            return; // don't steal keys from the filter box
+        // Only text entry should swallow keys — a focused slider or button
+        // must not disable the transport hotkeys.
+        if ctx.text_edit_focused() {
+            return;
         }
-        let (space, left, right, up, down, next, prev, enter) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::Space),
-                i.key_pressed(egui::Key::ArrowLeft),
-                i.key_pressed(egui::Key::ArrowRight),
-                i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::ArrowDown),
-                i.key_pressed(egui::Key::N),
-                i.key_pressed(egui::Key::P),
-                i.key_pressed(egui::Key::Enter),
-            )
-        });
-        if space {
+        // Consume the keys we handle so a widget that still holds keyboard
+        // focus (e.g. a transport button after being clicked) doesn't
+        // also react to them.
+        let pressed = |key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+        if pressed(egui::Key::Space) {
             self.toggle_play();
         }
-        if next {
+        if pressed(egui::Key::N) {
             self.step(true);
         }
-        if prev {
+        if pressed(egui::Key::P) {
             self.step(false);
         }
-        if enter && let Some(idx) = self.selected {
+        if pressed(egui::Key::Enter)
+            && let Some(idx) = self.selected
+        {
             self.play_selected(idx);
         }
-        if left || right {
-            let delta = if right { 5.0 } else { -5.0 };
-            if let (Some(player), Some(dur)) = (&self.player, self.current_duration()) {
-                let pos = player.position().as_secs_f32() + delta;
-                player.seek(Duration::from_secs_f32(pos.clamp(0.0, dur.as_secs_f32())));
-            }
+        if pressed(egui::Key::ArrowLeft) {
+            self.seek_by(-5.0);
         }
+        if pressed(egui::Key::ArrowRight) {
+            self.seek_by(5.0);
+        }
+        let up = pressed(egui::Key::ArrowUp);
+        let down = pressed(egui::Key::ArrowDown);
         if (up || down)
             && let Some(player) = &self.player
         {
@@ -542,6 +539,16 @@ impl RustampApp {
             player.set_volume(new_vol);
             self.config.volume = new_vol;
         }
+    }
+
+    /// Jump `delta_secs` relative to the current position, clamped to the
+    /// track bounds. No-op without a loaded track or known duration.
+    fn seek_by(&mut self, delta_secs: f32) {
+        let (Some(player), Some(dur)) = (&self.player, self.current_duration()) else {
+            return;
+        };
+        let pos = player.position().as_secs_f32() + delta_secs;
+        player.seek(Duration::from_secs_f32(pos.clamp(0.0, dur.as_secs_f32())));
     }
 
     /// Player strip: title/marquee, equalizer, seek bar, transport controls.
