@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::library::{self, Track};
 use crate::playlist::{Playlist, SortKey};
 
-use super::widgets::{format_time, marquee, spectrum};
+use super::widgets::{format_time, marquee, now_playing, spectrum};
 
 const ACCENT: Color32 = Color32::from_rgb(0, 255, 128); // winamp-ish green
 const ROW_HEIGHT: f32 = 22.0;
@@ -546,11 +546,23 @@ impl RustampApp {
                         .strong(),
                 );
                 ui.separator();
-                let now_playing = self
-                    .playlist
-                    .current()
-                    .map(|t| t.display_title())
-                    .unwrap_or_else(|| "—".to_string());
+                // Duration and kHz only exist once a file is loaded in the
+                // player — stopped means "—" rather than a half-empty line.
+                let line = match self.playlist.current() {
+                    Some(track)
+                        if self
+                            .player
+                            .as_ref()
+                            .is_some_and(|p| p.state != PlayState::Stopped) =>
+                    {
+                        now_playing(
+                            track,
+                            self.current_duration(),
+                            self.player.as_ref().map(|p| p.sample_rate()),
+                        )
+                    }
+                    _ => "—".to_string(),
+                };
                 let prefix = match self.player.as_ref().map(|p| p.state) {
                     Some(PlayState::Playing) => "> ",
                     Some(PlayState::Paused) => "|| ",
@@ -565,7 +577,7 @@ impl RustampApp {
                         self.show_library = !self.show_library;
                     }
                     ui.separator();
-                    marquee(ui, &format!("{prefix}{now_playing}"), ACCENT);
+                    marquee(ui, &format!("{prefix}{line}"), ACCENT);
                 });
             });
             let bars = self.analyzer.bars;

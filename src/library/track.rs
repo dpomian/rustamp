@@ -20,12 +20,18 @@ impl Track {
         match (&self.artist, &self.title) {
             (Some(artist), Some(title)) => format!("{artist} - {title}"),
             (None, Some(title)) => title.clone(),
-            _ => self
-                .path
+            _ => self.title_or_stem(),
+        }
+    }
+
+    /// Title tag, falling back to the file stem when it's missing.
+    pub fn title_or_stem(&self) -> String {
+        self.title.clone().unwrap_or_else(|| {
+            self.path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| self.path.display().to_string()),
-        }
+                .unwrap_or_else(|| self.path.display().to_string())
+        })
     }
 }
 
@@ -75,6 +81,26 @@ mod tests {
             duration: None,
         };
         assert_eq!(track.display_title(), "Band - Song");
+    }
+
+    #[test]
+    fn title_or_stem_prefers_tag_then_file_name() {
+        let tagged = Track {
+            path: PathBuf::from("/music/track.mp3"),
+            title: Some("Song".to_string()),
+            artist: None,
+            album: None,
+            duration: None,
+        };
+        assert_eq!(tagged.title_or_stem(), "Song");
+        let untagged = Track {
+            path: PathBuf::from("/music/01 - Cool Song.mp3"),
+            title: None,
+            artist: None,
+            album: None,
+            duration: None,
+        };
+        assert_eq!(untagged.title_or_stem(), "01 - Cool Song");
     }
 
     #[test]
