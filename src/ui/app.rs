@@ -15,6 +15,10 @@ use super::widgets::{format_time, marquee, spectrum};
 
 const ACCENT: Color32 = Color32::from_rgb(0, 255, 128); // winamp-ish green
 const ROW_HEIGHT: f32 = 22.0;
+/// Fixed window geometry — the window is not user-resizable, so the app
+/// resizes it itself when the library section is shown/hidden.
+const WINDOW_WIDTH: f32 = 520.0;
+const EXPANDED_HEIGHT: f32 = 640.0;
 /// How often the playback position is checkpointed to disk while playing.
 const POSITION_SAVE_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -62,6 +66,8 @@ pub struct RustampApp {
     last_pos_save: Instant,
     sort_key: SortKey,
     sort_asc: bool,
+    /// Whether the bottom section (watch folders + playlist) is visible.
+    show_library: bool,
 }
 
 impl RustampApp {
@@ -106,6 +112,7 @@ impl RustampApp {
             last_pos_save: Instant::now(),
             sort_key: SortKey::Artist,
             sort_asc: true,
+            show_library: true,
         };
         app.rescan();
         app
@@ -439,10 +446,29 @@ impl eframe::App for RustampApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.ui_top(ui);
-        self.ui_bottom(ui);
-        self.ui_folders(ui);
-        self.ui_playlist(ui);
+        let top_height = self.ui_top(ui);
+        if self.show_library {
+            self.ui_folders(ui);
+            self.ui_playlist(ui);
+        }
+
+        // The window isn't user-resizable, so the app resizes it itself:
+        // full height with the library open, just the player strip without.
+        let target = egui::vec2(
+            WINDOW_WIDTH,
+            if self.show_library {
+                EXPANDED_HEIGHT
+            } else {
+                top_height.ceil()
+            },
+        );
+        let current = ui
+            .ctx()
+            .input(|i| i.viewport().inner_rect.map(|r| r.size()));
+        if current.is_none_or(|s| (s.x - target.x).abs() > 1.0 || (s.y - target.y).abs() > 1.0) {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(target));
+        }
 
         if ui.ctx().input(|i| !i.raw.hovered_files.is_empty()) {
             egui::Area::new(egui::Id::new("drop_hint"))
@@ -506,8 +532,11 @@ impl RustampApp {
         }
     }
 
-    fn ui_top(&mut self, ui: &mut Ui) {
-        egui::Panel::top("top").show(ui, |ui| {
+    /// Player strip: title/marquee, equalizer, seek bar, transport controls.
+    /// Returns the panel's height so the window can shrink to fit when the
+    /// library section is hidden.
+    fn ui_top(&mut self, ui: &mut Ui) -> f32 {
+        let resp = egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(
@@ -527,128 +556,140 @@ impl RustampApp {
                     Some(PlayState::Paused) => "|| ",
                     _ => "",
                 };
-                marquee(ui, &format!("{prefix}{now_playing}"), ACCENT);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .selectable_label(self.show_library, "Playlist")
+                        .on_hover_text("Show/hide watch folders and playlist")
+                        .clicked()
+                    {
+                        self.show_library = !self.show_library;
+                    }
+                    ui.separator();
+                    marquee(ui, &format!("{prefix}{now_playing}"), ACCENT);
+                });
             });
             let bars = self.analyzer.bars;
             let peaks = self.analyzer.peaks;
             spectrum(ui, &bars, &peaks);
+            ui.add_space(4.0);
+            self.ui_seek(ui);
             ui.add_space(2.0);
+            self.ui_transport(ui);
+            ui.add_space(4.0);
+        });
+        resp.response.rect.height()
+    }
+
+    /// Seek bar with time labels.
+    fn ui_seek(&mut self, ui: &mut Ui) {
+        let duration = self.current_duration();
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format_time(self.current_position()))
+                    .monospace()
+                    .color(Color32::LIGHT_GRAY),
+            );
+
+            let position = self.current_position();
+            let mut shown = duration
+                .map(|d| (position.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            // Reserve ~55px for the trailing duration label.
+            let width = (ui.available_width() - 55.0).max(40.0);
+            let slider = egui::Slider::new(&mut shown, 0.0..=1.0)
+                .show_value(false)
+                .trailing_fill(true);
+            let resp = if duration.is_some() {
+                ui.add_sized([width, 20.0], slider)
+            } else {
+                ui.add_enabled(false, slider)
+            };
+            if resp.dragged()
+                && let Some(d) = duration
+            {
+                self.seek_drag = Some(Duration::from_secs_f32(shown * d.as_secs_f32()));
+            }
+            if resp.drag_stopped()
+                && let Some(target) = self.seek_drag.take()
+                && let Some(player) = &self.player
+            {
+                player.seek(target);
+            }
+
+            ui.label(
+                RichText::new(duration.map(format_time).unwrap_or_else(|| "--:--".into()))
+                    .monospace()
+                    .color(Color32::LIGHT_GRAY),
+            );
         });
     }
 
-    fn ui_bottom(&mut self, ui: &mut Ui) {
-        egui::Panel::bottom("transport").show(ui, |ui| {
-            ui.add_space(6.0);
+    /// Transport buttons + volume + modes, sized for the narrow window.
+    fn ui_transport(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("<<").on_hover_text("Previous").clicked() {
+                self.step(false);
+            }
+            let play_label = match self.player.as_ref().map(|p| p.state) {
+                Some(PlayState::Playing) => "||",
+                _ => ">",
+            };
+            if ui
+                .button(RichText::new(play_label).color(ACCENT).strong())
+                .on_hover_text("Play / pause")
+                .clicked()
+            {
+                self.toggle_play();
+            }
+            if ui.button("[]").on_hover_text("Stop").clicked() {
+                self.stop();
+            }
+            if ui.button(">>").on_hover_text("Next").clicked() {
+                self.step(true);
+            }
 
-            // Seek bar with time labels.
-            let duration = self.current_duration();
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format_time(self.current_position()))
-                        .monospace()
-                        .color(Color32::LIGHT_GRAY),
-                );
+            ui.separator();
 
-                let position = self.current_position();
-                let mut shown = duration
-                    .map(|d| (position.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0))
-                    .unwrap_or(0.0);
-                // Reserve ~55px for the trailing duration label.
-                let width = (ui.available_width() - 55.0).max(40.0);
-                let slider = egui::Slider::new(&mut shown, 0.0..=1.0)
-                    .show_value(false)
-                    .trailing_fill(true);
-                let resp = if duration.is_some() {
-                    ui.add_sized([width, 20.0], slider)
-                } else {
-                    ui.add_enabled(false, slider)
-                };
-                if resp.dragged()
-                    && let Some(d) = duration
-                {
-                    self.seek_drag = Some(Duration::from_secs_f32(shown * d.as_secs_f32()));
-                }
-                if resp.drag_stopped()
-                    && let Some(target) = self.seek_drag.take()
-                    && let Some(player) = &self.player
-                {
-                    player.seek(target);
-                }
+            let shuffle_text = if self.playlist.shuffle {
+                RichText::new("Shuffle").color(ACCENT)
+            } else {
+                RichText::new("Shuffle")
+            };
+            if ui
+                .selectable_label(self.playlist.shuffle, shuffle_text)
+                .clicked()
+            {
+                let on = !self.playlist.shuffle;
+                self.playlist.set_shuffle(on, &mut rand::rng());
+            }
+            if ui.button(self.playlist.repeat.label()).clicked() {
+                self.playlist.repeat = self.playlist.repeat.cycle();
+            }
 
-                ui.label(
-                    RichText::new(duration.map(format_time).unwrap_or_else(|| "--:--".into()))
-                        .monospace()
-                        .color(Color32::LIGHT_GRAY),
-                );
-            });
+            ui.separator();
 
-            // Transport buttons + volume + modes.
-            ui.horizontal(|ui| {
-                if ui.button("<< Prev").clicked() {
-                    self.step(false);
+            ui.label("Vol");
+            let mut volume = self.config.volume;
+            let resp = ui.add_sized(
+                [70.0, 20.0],
+                egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false),
+            );
+            if resp.changed() {
+                self.config.volume = volume;
+                if let Some(player) = &self.player {
+                    player.set_volume(volume);
                 }
-                let play_label = match self.player.as_ref().map(|p| p.state) {
-                    Some(PlayState::Playing) => "|| Pause",
-                    Some(PlayState::Paused) => "> Resume",
-                    _ => "> Play",
-                };
-                if ui
-                    .button(RichText::new(play_label).color(ACCENT).strong())
-                    .clicked()
-                {
-                    self.toggle_play();
-                }
-                if ui.button("[] Stop").clicked() {
-                    self.stop();
-                }
-                if ui.button("Next >>").clicked() {
-                    self.step(true);
-                }
-
-                ui.separator();
-
-                let shuffle_text = if self.playlist.shuffle {
-                    RichText::new("Shuffle").color(ACCENT)
-                } else {
-                    RichText::new("Shuffle")
-                };
-                if ui
-                    .selectable_label(self.playlist.shuffle, shuffle_text)
-                    .clicked()
-                {
-                    let on = !self.playlist.shuffle;
-                    self.playlist.set_shuffle(on, &mut rand::rng());
-                }
-                if ui.button(self.playlist.repeat.label()).clicked() {
-                    self.playlist.repeat = self.playlist.repeat.cycle();
-                }
-
-                ui.separator();
-
-                ui.label("Vol");
-                let mut volume = self.config.volume;
-                let resp = ui.add_sized(
-                    [90.0, 20.0],
-                    egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false),
-                );
-                if resp.changed() {
-                    self.config.volume = volume;
-                    if let Some(player) = &self.player {
-                        player.set_volume(volume);
-                    }
-                }
-                if resp.drag_stopped() {
-                    let _ = self.config.save();
-                }
-            });
-            ui.add_space(4.0);
+            }
+            if resp.drag_stopped() {
+                let _ = self.config.save();
+            }
         });
     }
 
     fn ui_folders(&mut self, ui: &mut Ui) {
         egui::Panel::left("folders")
             .resizable(true)
-            .default_size(220.0)
+            .default_size(160.0)
             .show(ui, |ui| {
                 ui.heading("Watch folders");
                 ui.add_space(4.0);
@@ -710,7 +751,7 @@ impl RustampApp {
                     ui.label("Filter:");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.filter)
-                            .desired_width(180.0)
+                            .desired_width(140.0)
                             .hint_text("artist / title / album"),
                     );
                 });
@@ -746,9 +787,9 @@ impl RustampApp {
                 .striped(true)
                 .sense(egui::Sense::click())
                 .column(Column::exact(30.0))
-                .column(Column::remainder().at_least(120.0).clip(true))
-                .column(Column::remainder().at_least(160.0).clip(true))
-                .column(Column::remainder().at_least(120.0).clip(true))
+                .column(Column::remainder().at_least(90.0).clip(true))
+                .column(Column::remainder().at_least(110.0).clip(true))
+                .column(Column::remainder().at_least(90.0).clip(true))
                 .column(Column::exact(48.0))
                 .header(ROW_HEIGHT, |mut header| {
                     header.col(|ui| {
