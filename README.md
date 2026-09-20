@@ -25,6 +25,9 @@ Built with [egui/eframe](https://github.com/emilk/egui) for the UI and
 ## Features
 
 - Watch folders — recursively scans for audio files, deduplicates, reads tags
+- Tag fallback — missing artist/album tags are inferred from a parent folder
+  named `<artist>--<album>` (e.g. `iced-earth--horror-show` → Iced Earth /
+  Horror Show)
 - Drag & drop — drop folders to watch them, or drop files to play them
 - Playlist with filter/search, sortable columns, shuffle, and repeat (off / all / one)
 - Play, pause, stop, prev/next, seek bar, volume control

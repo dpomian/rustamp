@@ -32,7 +32,8 @@ src/
   library/
     mod.rs           re-exports
     track.rs         Track model, display_title(), matches_filter()
-    scan.rs          is_audio(), scan_folder() (walkdir + lofty), scan_folders() (dedup + sort)
+    scan.rs          is_audio(), scan_folder() (walkdir + lofty), scan_folders() (dedup + sort),
+                     track_from_path() (tags + folder-name fallback for artist/album)
 
   audio/
     mod.rs           re-exports
@@ -135,6 +136,16 @@ When the track is played, the decoder's `total_duration()` replaces it via
 falls back to the stored track value. If you add features that display or
 sort by duration, use `current_duration()`/`track.duration` and tolerate
 `None`.
+
+## Artist/album folder-name fallback
+
+`track_from_path` fills `artist`/`album` from tags first. When a field is
+missing (or blank), it falls back to the file's immediate parent folder name
+— but only when that name matches the `<artist>--<album>` convention exactly
+(one `--` separator, both sides non-empty). Single hyphens inside each side
+are word separators and the result is title-cased: `iced-earth--horror-show`
+yields `Iced Earth` / `Horror Show`. The two fields fall back independently —
+a tagged artist with a missing album still gets the folder's album.
 
 ## Visualizer pipeline
 
