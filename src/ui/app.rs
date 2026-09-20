@@ -68,6 +68,9 @@ pub struct RustampApp {
     sort_asc: bool,
     /// Whether the bottom section (watch folders + playlist) is visible.
     show_library: bool,
+    /// Last measured content width of the playlist table; drives the
+    /// horizontal scrollbar when resized columns overflow the pane.
+    playlist_table_width: f32,
 }
 
 impl RustampApp {
@@ -113,6 +116,7 @@ impl RustampApp {
             sort_key: SortKey::Artist,
             sort_asc: true,
             show_library: true,
+            playlist_table_width: 0.0,
         };
         app.rescan();
         app
@@ -794,94 +798,111 @@ impl RustampApp {
                 .collect();
 
             let current = self.playlist.current_index();
-            TableBuilder::new(ui)
-                .id_salt("playlist")
-                .striped(true)
-                .sense(egui::Sense::click())
-                .column(Column::exact(30.0))
-                .column(Column::remainder().at_least(90.0).clip(true))
-                .column(Column::remainder().at_least(110.0).clip(true))
-                .column(Column::remainder().at_least(90.0).clip(true))
-                .column(Column::exact(48.0))
-                .header(ROW_HEIGHT, |mut header| {
-                    header.col(|ui| {
-                        ui.label(RichText::new("#").weak());
-                    });
-                    header.col(|ui| self.sort_header(ui, SortKey::Artist, "Artist"));
-                    header.col(|ui| self.sort_header(ui, SortKey::Title, "Title"));
-                    header.col(|ui| self.sort_header(ui, SortKey::Album, "Album"));
-                    header.col(|ui| self.sort_header(ui, SortKey::Duration, "Time"));
-                })
-                .body(|body| {
-                    body.rows(ROW_HEIGHT, visible.len(), |mut row| {
-                        let track_index = visible[row.index()];
-                        let row_num = row.index() + 1;
-                        // Copy display data out so click handlers can mutate self.
-                        let (artist, title, album, track_duration) = {
-                            let t = &self.playlist.tracks[track_index];
-                            (
-                                t.artist.clone().unwrap_or_default(),
-                                t.title.clone().unwrap_or_else(|| {
-                                    t.path
-                                        .file_stem()
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .unwrap_or_default()
-                                }),
-                                t.album.clone().unwrap_or_default(),
-                                t.duration,
-                            )
-                        };
-                        let is_current = current == Some(track_index);
-                        let is_selected = self.selected == Some(track_index);
-                        row.set_selected(is_selected);
-
-                        row.col(|ui| {
-                            ui.label(RichText::new(format!("{row_num}")).weak());
-                        });
-                        for text in [&artist, &title, &album] {
-                            row.col(|ui| {
-                                let mut text = RichText::new(text.as_str());
-                                if is_current {
-                                    text = text.color(ACCENT).strong();
-                                }
-                                ui.add(egui::Label::new(text).truncate());
+            // Resized columns can push the table past the pane's right edge,
+            // so the whole pane scrolls horizontally. Inside a ScrollArea the
+            // available width is infinite — which would make the remainder
+            // columns infinite too — so clamp it to the last measured content
+            // width (one frame of feedback lag).
+            let pane_width = ui.available_width();
+            egui::ScrollArea::horizontal()
+                .id_salt("playlist_hscroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_max_width(pane_width.max(self.playlist_table_width));
+                    let out = TableBuilder::new(ui)
+                        .id_salt("playlist")
+                        .striped(true)
+                        .sense(egui::Sense::click())
+                        .resizable(true)
+                        .column(Column::exact(30.0).resizable(false))
+                        .column(Column::remainder().at_least(110.0).clip(true))
+                        .column(Column::remainder().at_least(90.0).clip(true))
+                        .column(Column::remainder().at_least(90.0).clip(true))
+                        .column(Column::exact(48.0).resizable(false))
+                        .header(ROW_HEIGHT, |mut header| {
+                            header.col(|ui| {
+                                ui.label(RichText::new("#").weak());
                             });
-                        }
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(
-                                    track_duration
-                                        .map(format_time)
-                                        .unwrap_or_else(|| "--:--".into()),
-                                )
-                                .weak()
-                                .monospace(),
-                            );
-                        });
+                            header.col(|ui| self.sort_header(ui, SortKey::Title, "Title"));
+                            header.col(|ui| self.sort_header(ui, SortKey::Artist, "Artist"));
+                            header.col(|ui| self.sort_header(ui, SortKey::Album, "Album"));
+                            header.col(|ui| self.sort_header(ui, SortKey::Duration, "Time"));
+                        })
+                        .body(|body| {
+                            body.rows(ROW_HEIGHT, visible.len(), |mut row| {
+                                let track_index = visible[row.index()];
+                                let row_num = row.index() + 1;
+                                // Copy display data out so click handlers can mutate self.
+                                let (artist, title, album, track_duration) = {
+                                    let t = &self.playlist.tracks[track_index];
+                                    (
+                                        t.artist.clone().unwrap_or_default(),
+                                        t.title.clone().unwrap_or_else(|| {
+                                            t.path
+                                                .file_stem()
+                                                .map(|s| s.to_string_lossy().into_owned())
+                                                .unwrap_or_default()
+                                        }),
+                                        t.album.clone().unwrap_or_default(),
+                                        t.duration,
+                                    )
+                                };
+                                let is_current = current == Some(track_index);
+                                let is_selected = self.selected == Some(track_index);
+                                row.set_selected(is_selected);
 
-                        let resp = row.response();
-                        resp.context_menu(|ui| {
-                            for (label, value) in [
-                                ("Copy artist", &artist),
-                                ("Copy title", &title),
-                                ("Copy album", &album),
-                            ] {
-                                if ui
-                                    .add_enabled(!value.is_empty(), egui::Button::new(label))
-                                    .clicked()
-                                {
-                                    ui.ctx().copy_text(value.clone());
-                                    ui.close();
+                                row.col(|ui| {
+                                    ui.label(RichText::new(format!("{row_num}")).weak());
+                                });
+                                for text in [&title, &artist, &album] {
+                                    row.col(|ui| {
+                                        let mut text = RichText::new(text.as_str());
+                                        if is_current {
+                                            text = text.color(ACCENT).strong();
+                                        }
+                                        ui.add(egui::Label::new(text).truncate());
+                                    });
                                 }
-                            }
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(
+                                            track_duration
+                                                .map(format_time)
+                                                .unwrap_or_else(|| "--:--".into()),
+                                        )
+                                        .weak()
+                                        .monospace(),
+                                    );
+                                });
+
+                                let resp = row.response();
+                                resp.context_menu(|ui| {
+                                    for (label, value) in [
+                                        ("Copy artist", &artist),
+                                        ("Copy title", &title),
+                                        ("Copy album", &album),
+                                    ] {
+                                        if ui
+                                            .add_enabled(
+                                                !value.is_empty(),
+                                                egui::Button::new(label),
+                                            )
+                                            .clicked()
+                                        {
+                                            ui.ctx().copy_text(value.clone());
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                if resp.clicked() {
+                                    self.selected = Some(track_index);
+                                }
+                                if resp.double_clicked() {
+                                    self.play_selected(track_index);
+                                }
+                            });
                         });
-                        if resp.clicked() {
-                            self.selected = Some(track_index);
-                        }
-                        if resp.double_clicked() {
-                            self.play_selected(track_index);
-                        }
-                    });
+                    self.playlist_table_width = out.content_size.x;
                 });
         });
     }
