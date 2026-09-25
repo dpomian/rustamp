@@ -32,7 +32,7 @@ jobs:
     steps:
       - name: Checkout
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -72,7 +72,7 @@ jobs:
 
       - name: Create GitHub release
         if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.bump.outputs.tag }}
           name: ${{ steps.bump.outputs.tag }}
@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.tag }}
 
@@ -127,7 +127,7 @@ jobs:
           tar -czf rustamp-linux-x86_64.tar.gz -C dist .
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           files: rustamp-linux-x86_64.tar.gz
@@ -137,7 +137,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.tag }}
 
@@ -157,7 +157,7 @@ jobs:
           Compress-Archive -Path dist\* -DestinationPath rustamp-windows-x86_64.zip
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           files: rustamp-windows-x86_64.zip
@@ -167,7 +167,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.version.outputs.tag }}
 
@@ -196,7 +196,7 @@ jobs:
           tar -czf rustamp-macos-universal.tar.gz -C dist .
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           files: rustamp-macos-universal.tar.gz
