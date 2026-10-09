@@ -15,6 +15,9 @@ once per frame by eframe, plus two background concerns:
    a `SampleTap`), plays them, and feeds the visualizer via a shared buffer.
 2. **Scan thread** — a short-lived `std::thread` spawned per rescan that walks
    watched folders and sends results back over an `mpsc` channel.
+3. **Download thread** — a short-lived `std::thread` spawned per YouTube
+   download; runs the synchronous `download::Downloader` and streams
+   `DownloadEvent`s (status lines, percent, finished files) back over `mpsc`.
 
 Everything else is synchronous, single-threaded, and owned by `RustampApp`.
 
@@ -35,6 +38,15 @@ src/
     scan.rs          is_audio(), scan_folder() (walkdir + lofty), scan_folders() (dedup + sort),
                      track_from_path() (tags + folder-name fallback for artist/album)
 
+  download/
+    mod.rs           re-exports
+    models.rs        VideoInfo/Chapter (yt-dlp --dump-json), AudioFormat (mp3/vorbis),
+                     DownloadOptions, DownloadEvent (worker→UI progress messages)
+    error.rs         DownloadError (hand-rolled, no thiserror)
+    utils.rs         tools_status() probes, URL checks, sanitize_filename(), ensure_output_dir()
+    downloader.rs    Downloader: synchronous yt-dlp/ffmpeg subprocess wrapper with
+                     retry+backoff, playlists, chapter splitting, % progress parsing
+
   audio/
     mod.rs           re-exports
     player.rs        AudioPlayer: rodio wrapper, PlayState, AudioError
@@ -44,6 +56,8 @@ src/
   ui/
     mod.rs           re-exports RustampApp
     app.rs           RustampApp: eframe::App impl, all state, all event handling
+    download.rs      DownloadDialog: floating "Download from YouTube" window,
+                     spawns the download thread, renders log/progress
     widgets.rs       format_time(), marquee(), spectrum() — pure paint functions
 ```
 
@@ -54,6 +68,7 @@ ui ──> playlist ──> library
 ui ──> audio
 ui ──> config ──> skin
 ui ──> skin
+ui ──> download
 ```
 
 `audio`, `library`, `playlist`, and `config` never depend on each other
@@ -68,6 +83,7 @@ not via a new cross-module dependency.
 | Channel | Producer → Consumer | Type |
 | ------- | ------------------- | ---- |
 | `scan_rx` | scan thread → UI frame | `mpsc::Receiver<Vec<Track>>`, polled with `try_recv()` in `logic()` |
+| `download.rx` | download thread → UI frame | `mpsc::Receiver<DownloadEvent>`, drained in `logic()` via `DownloadDialog::poll_events()` |
 | `SampleBuffer` | audio thread → UI frame | `Arc<Mutex<VecDeque<f32>>>`, ring buffer of 8192 mono samples |
 
 That's all the shared state. There are no locks on the UI side beyond the
@@ -196,6 +212,15 @@ All in `ui/app.rs`, rendered top-to-bottom each frame:
 - `ui_playlist` — central panel (2/3 of the library area): filter box,
   status/error lines, virtualized
   track rows (`ScrollArea::show_rows`, fixed `ROW_HEIGHT`)
+- `DownloadDialog::show` — floating `egui::Window` (opened from the
+  "Download…" button in the watch-folders header): URL field, format picker
+  (MP3/OGG Vorbis), split-chapters toggle, target folder picker, progress
+  bar + scrolling status log
+
+Finished downloads are folded into the playlist like dropped loose files
+(`add_downloaded` → `extra_tracks` + `playlist.add_tracks`, deduped by
+path), so they persist across rescans even when the download dir isn't a
+watched folder.
 
 Notable mechanics:
 

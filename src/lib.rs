@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod config;
+pub mod download;
 pub mod library;
 pub mod playlist;
 pub mod skin;
