@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -51,6 +51,27 @@ fn install_fallback_font(ctx: &egui::Context) {
             .push("system-symbols".to_owned());
     }
     ctx.set_fonts(fonts);
+}
+
+/// Merge freshly scanned tracks with `extras` — files the user dropped
+/// onto the window or downloaded, which the folder scan doesn't discover.
+/// Extras already found by the scan are deduped by path.
+fn merge_extra_tracks(mut scanned: Vec<Track>, extras: &[Track]) -> Vec<Track> {
+    for extra in extras {
+        if !scanned.iter().any(|t| t.path == extra.path) {
+            scanned.push(extra.clone());
+        }
+    }
+    scanned
+}
+
+/// Remove a watched folder along with every extra track living under it.
+/// `extra_tracks` is append-only (dropped files, finished downloads), so
+/// without this the rescan that follows the removal would merge those
+/// tracks back into the playlist even though their source folder is gone.
+fn remove_watched_folder(config: &mut Config, extra_tracks: &mut Vec<Track>, folder: &Path) {
+    config.remove_folder(&folder.to_path_buf());
+    extra_tracks.retain(|t| !t.path.starts_with(folder));
 }
 
 pub struct RustampApp {
@@ -409,15 +430,8 @@ impl eframe::App for RustampApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(rx) = &self.scan_rx {
             match rx.try_recv() {
-                Ok(tracks) => {
-                    // Loose drag-and-dropped files aren't inside watched
-                    // folders — merge them back in so a rescan keeps them.
-                    let mut tracks = tracks;
-                    for extra in &self.extra_tracks {
-                        if !tracks.iter().any(|t| t.path == extra.path) {
-                            tracks.push(extra.clone());
-                        }
-                    }
+                Ok(scanned) => {
+                    let tracks = merge_extra_tracks(scanned, &self.extra_tracks);
                     let n = tracks.len();
                     self.playlist.set_tracks(tracks, &mut rand::rng());
                     self.scan_rx = None;
@@ -826,7 +840,7 @@ impl RustampApp {
                     }
                 });
                 if let Some(folder) = to_remove {
-                    self.config.remove_folder(&folder);
+                    remove_watched_folder(&mut self.config, &mut self.extra_tracks, &folder);
                     let _ = self.config.save();
                     self.rescan();
                 }
@@ -991,9 +1005,62 @@ impl RustampApp {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use eframe::egui;
 
-    use super::FOLDERS_HEIGHT_FRACTION;
+    use super::{FOLDERS_HEIGHT_FRACTION, merge_extra_tracks, remove_watched_folder};
+    use crate::config::Config;
+    use crate::library::{self, Track};
+
+    fn track_at(path: &str) -> Track {
+        Track {
+            path: PathBuf::from(path),
+            title: None,
+            artist: None,
+            album: None,
+            duration: None,
+        }
+    }
+
+    /// Issue #14: tracks that reached `extra_tracks` while living under a
+    /// watched folder (downloaded into it, or dropped before it was
+    /// watched) used to survive the folder's removal — the rescan merge
+    /// pinned them back into the playlist forever.
+    #[test]
+    fn removing_folder_removes_tracks_sourced_from_it() {
+        let folder = PathBuf::from("/music");
+        let mut config = Config::default();
+        config.add_folder(folder.clone());
+        let mut extras = vec![
+            track_at("/music/downloaded.mp3"),
+            track_at("/music/nested/deep.mp3"),
+            track_at("/elsewhere/loose.mp3"),
+        ];
+
+        remove_watched_folder(&mut config, &mut extras, &folder);
+        let tracks = merge_extra_tracks(library::scan_folders(&config.folders), &extras);
+
+        assert!(config.folders.is_empty());
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].path, PathBuf::from("/elsewhere/loose.mp3"));
+    }
+
+    /// `Path::starts_with` is component-wise — removing /music must not
+    /// drop tracks under sibling dirs like /music2 or /music-other.
+    #[test]
+    fn removing_folder_keeps_extras_in_sibling_prefix_dirs() {
+        let mut config = Config::default();
+        config.add_folder(PathBuf::from("/music"));
+        let mut extras = vec![
+            track_at("/music2/song.mp3"),
+            track_at("/music-other/song.mp3"),
+        ];
+
+        remove_watched_folder(&mut config, &mut extras, Path::new("/music"));
+
+        assert_eq!(extras.len(), 2);
+    }
 
     /// The watch-folders bottom pane gets one third of the library area;
     /// the playlist central panel fills the remaining two thirds.
