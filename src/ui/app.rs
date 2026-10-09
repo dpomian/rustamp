@@ -12,6 +12,7 @@ use crate::library::{self, Track};
 use crate::playlist::{Playlist, SortKey};
 use crate::skin::Skin;
 
+use super::download::DownloadDialog;
 use super::widgets::{format_time, marquee, now_playing, spectrum};
 
 const ROW_HEIGHT: f32 = 22.0;
@@ -74,6 +75,8 @@ pub struct RustampApp {
     /// Last measured content width of the playlist table; drives the
     /// horizontal scrollbar when resized columns overflow the pane.
     playlist_table_width: f32,
+    /// YouTube download window + its worker-thread events.
+    download: DownloadDialog,
 }
 
 impl RustampApp {
@@ -122,6 +125,7 @@ impl RustampApp {
             sort_asc: true,
             show_library: true,
             playlist_table_width: 0.0,
+            download: DownloadDialog::default(),
         };
         app.rescan();
         app
@@ -377,6 +381,27 @@ impl RustampApp {
             self.set_status(format!("Dropped: {}", parts.join(", ")));
         }
     }
+
+    /// Fold freshly downloaded files into the playlist exactly like dropped
+    /// loose files: kept in `extra_tracks` so a later rescan doesn't lose
+    /// them, deduped by path.
+    fn add_downloaded(&mut self, paths: Vec<PathBuf>) {
+        let new_tracks: Vec<Track> = paths
+            .into_iter()
+            .filter(|p| library::is_audio(p))
+            .filter(|p| {
+                !self.extra_tracks.iter().any(|t| t.path == *p)
+                    && !self.playlist.tracks.iter().any(|t| t.path == *p)
+            })
+            .map(|p| library::track_from_path(&p))
+            .collect();
+        let n = new_tracks.len();
+        if n > 0 {
+            self.extra_tracks.extend(new_tracks.iter().cloned());
+            self.playlist.add_tracks(new_tracks, &mut rand::rng());
+            self.set_status(format!("Downloaded {n} track(s)"));
+        }
+    }
 }
 
 impl eframe::App for RustampApp {
@@ -415,6 +440,14 @@ impl eframe::App for RustampApp {
         });
         if !dropped.is_empty() {
             self.handle_dropped(dropped);
+        }
+
+        let downloaded = self.download.poll_events();
+        if !downloaded.is_empty() {
+            self.add_downloaded(downloaded);
+        }
+        if self.download.is_running() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
 
         self.maybe_auto_advance();
@@ -460,6 +493,7 @@ impl eframe::App for RustampApp {
             self.ui_folders(ui);
             self.ui_playlist(ui);
         }
+        self.download.show(ui.ctx(), &mut self.config);
 
         // The window isn't user-resizable, so the app resizes it itself:
         // full height with the library open, just the player strip without.
@@ -757,6 +791,13 @@ impl RustampApp {
                     }
                     if ui.button("Rescan now").clicked() {
                         self.rescan();
+                    }
+                    if ui
+                        .button("Download…")
+                        .on_hover_text("Download audio from YouTube (requires yt-dlp)")
+                        .clicked()
+                    {
+                        self.download.open();
                     }
                 });
                 ui.add_space(4.0);

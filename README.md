@@ -35,6 +35,9 @@ Built with [egui/eframe](https://github.com/emilk/egui) for the UI and
 - Color skins — 9 built-in presets, plus hand-editable custom skins
 - Persistent config (folders + volume + skin) in your platform config dir
 - Resume playback — reopens the last track paused where you left off
+- YouTube downloads — fetch videos or playlists as MP3/OGG (requires
+  [yt-dlp](https://github.com/yt-dlp/yt-dlp) and ffmpeg), with optional
+  chapter-to-track splitting
 
 ## Run
 

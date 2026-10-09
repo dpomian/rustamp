@@ -27,6 +27,10 @@ pub struct Config {
     /// Color scheme. Missing fields keep the default "winamp" look.
     #[serde(default)]
     pub skin: Skin,
+    /// Where YouTube downloads are written. `None` falls back to
+    /// `~/.rustamp/my-music` — see [`Config::download_dir`].
+    #[serde(default)]
+    pub download_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -37,6 +41,7 @@ impl Default for Config {
             last_track: None,
             last_position_secs: None,
             skin: Skin::default(),
+            download_dir: None,
         }
     }
 }
@@ -78,6 +83,16 @@ impl Config {
 
     pub fn remove_folder(&mut self, folder: &PathBuf) {
         self.folders.retain(|f| f != folder);
+    }
+
+    /// Effective download directory: the configured one, or
+    /// `~/.rustamp/my-music` when unset (or when there's no home dir, `.`).
+    pub fn download_dir(&self) -> PathBuf {
+        self.download_dir.clone().unwrap_or_else(|| {
+            dirs::home_dir()
+                .map(|home| home.join(".rustamp").join("my-music"))
+                .unwrap_or_else(|| PathBuf::from("."))
+        })
     }
 }
 
