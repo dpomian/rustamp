@@ -35,24 +35,29 @@ impl Track {
     }
 }
 
+/// Lowercase and treat `-`/`_` as spaces, so a query typed the way a name
+/// is written ("battle beast") matches disk names like "battle-beast".
+fn normalize_filter_text(s: &str) -> String {
+    s.to_lowercase().replace(['-', '_'], " ")
+}
+
 /// Case-insensitive substring match used by the playlist filter box.
+/// Searches the display title plus the artist, album, and file path —
+/// `display_title` alone isn't enough: without a title tag it is just the
+/// file stem, which drops a tagged/inferred artist from the search.
 pub fn matches_filter(track: &Track, filter: &str) -> bool {
     if filter.is_empty() {
         return true;
     }
-    let needle = filter.to_lowercase();
-    track.display_title().to_lowercase().contains(&needle)
-        || track
-            .album
-            .as_deref()
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains(&needle)
-        || track
-            .path
-            .to_string_lossy()
-            .to_lowercase()
-            .contains(&needle)
+    let needle = normalize_filter_text(filter);
+    [
+        track.display_title(),
+        track.artist.clone().unwrap_or_default(),
+        track.album.clone().unwrap_or_default(),
+        track.path.to_string_lossy().into_owned(),
+    ]
+    .iter()
+    .any(|haystack| normalize_filter_text(haystack).contains(&needle))
 }
 
 #[cfg(test)]
@@ -117,5 +122,37 @@ mod tests {
         assert!(matches_filter(&track, "revolver"));
         assert!(matches_filter(&track, ""));
         assert!(!matches_filter(&track, "zeppelin"));
+    }
+
+    /// Issue #15: the artist column displays "Battle Beast" (tag or
+    /// `<artist>--<album>` folder inference), but without a title tag the
+    /// display title falls back to the file stem — so the artist must be
+    /// searched as its own field.
+    #[test]
+    fn matches_filter_searches_artist_when_title_is_missing() {
+        let track = Track {
+            path: PathBuf::from("/music/battle-beast--unleash/01-song.mp3"),
+            title: None,
+            artist: Some("Battle Beast".to_string()),
+            album: Some("Unleash".to_string()),
+            duration: None,
+        };
+        assert!(matches_filter(&track, "battle beast"));
+    }
+
+    /// Issue #15: for untagged files the name only exists on disk with
+    /// hyphens — a natural space-separated query must still match.
+    #[test]
+    fn matches_filter_treats_hyphens_as_word_separators() {
+        let track = Track {
+            path: PathBuf::from("/music/battle-beast/01 - song.mp3"),
+            title: None,
+            artist: None,
+            album: None,
+            duration: None,
+        };
+        assert!(matches_filter(&track, "battle beast"));
+        assert!(matches_filter(&track, "battle-beast"));
+        assert!(!matches_filter(&track, "battle toads"));
     }
 }
